@@ -46,6 +46,7 @@ def test_publication_order_and_failed_update_stays_paused(monkeypatch, actor, mo
     engine = SimpleNamespace(**{name: method(name) for name in names})
     worker = actor.OLMoCoreTrainRayActor.__new__(actor.OLMoCoreTrainRayActor)
     worker.args = SimpleNamespace(
+        fully_async=False,
         pause_generation_mode=mode,
         sglang_disable_radix_cache=True,
         colocate=False,

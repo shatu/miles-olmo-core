@@ -755,7 +755,7 @@ class OLMoCoreTrainRayActor(TrainRayActor):
                         for engine in engines
                     ]
                 )
-            session.pause_engines(self.args, engines)
+            session.maybe_pause_engines(self.args, engines)
             async_utils.wait_futures([async_utils.submit(engine.begin_weight_update()) for engine in engines])
         publication.trace("pause_barrier_start", rank=dist.get_rank())
         dist.barrier()
