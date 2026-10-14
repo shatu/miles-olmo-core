@@ -116,7 +116,7 @@ def test_sample_conversion_and_refresh_provenance_match_legacy(length):
     assert actual.rollout_log_probs == expected.rollout_log_probs
     assert all(isinstance(value, float) for value in actual.rollout_log_probs)
     assert provenance == expected_provenance
-    assert actual.weight_versions[0].to_dicts() == expected.weight_versions[0].to_dicts()
+    assert actual.weight_versions[0].to_dict() == expected.weight_versions[0].to_dict()
 
 
 def test_refresh_rejects_misaligned_compact_records():

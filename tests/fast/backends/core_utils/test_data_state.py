@@ -78,3 +78,18 @@ def test_policy_agreement_ignores_tool_tokens_and_weights_active_tokens():
     rollout["loss_masks"][0][1] = 1
     with pytest.raises(ValueError, match="Non-finite"):
         score_agreement(rollout)
+
+
+def test_converted_multi_turn_samples_carry_their_sampled_token_versions():
+    # Each generation call of a multi-turn sample, as train-data conversion serializes it.
+    from miles.utils.types import WeightVersionSpan, WeightVersionsPerCall
+
+    calls = [
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan("3", 10, 20)], prefill_spans=[WeightVersionSpan("3", 0, 10)], output_start=10
+        ).to_dict(),
+        WeightVersionsPerCall(
+            spans=[WeightVersionSpan("4", 30, 40)], prefill_spans=[WeightVersionSpan("3", 0, 30)], output_start=30
+        ).to_dict(),
+    ]
+    assert policy_versions({"weight_versions": [calls]}) == [3, 4]

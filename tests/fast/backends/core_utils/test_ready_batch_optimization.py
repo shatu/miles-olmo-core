@@ -31,7 +31,7 @@ def entry(index, version=0):
         tokens=[1, 2],
         response_length=1,
         reward=1.0,
-        weight_versions=[WeightVersionsPerCall.from_dicts([dict(version=str(version), abs_start=1, abs_end=2)])],
+        weight_versions=[WeightVersionsPerCall.from_dict([dict(version=str(version), abs_start=1, abs_end=2)])],
         status=Sample.Status.COMPLETED,
     )
     return DataBufferInput(prompt_group=[sample], group=[sample])

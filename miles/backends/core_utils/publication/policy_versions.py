@@ -1,4 +1,8 @@
-"""Read native MILES token spans and historical integer-version ledgers."""
+"""Read native MILES token spans and historical integer-version ledgers.
+
+A generation call arrives as a WeightVersionsPerCall, its to_dict() wire form (sampled-token
+"spans" plus "prefill_spans"), or a bare span list. Only the sampled-token spans are behavior.
+"""
 
 from dataclasses import asdict, is_dataclass
 
@@ -18,7 +22,12 @@ def spans(calls):
     result = []
     previous_end = 0
     for call in calls:
-        entries = call.spans if hasattr(call, "spans") else call
+        if hasattr(call, "spans"):
+            entries = call.spans
+        elif isinstance(call, dict):
+            entries = call.get("spans")
+        else:
+            entries = call
         if not isinstance(entries, (list, tuple)):
             raise ValueError("Every generation call must carry a policy span list")
         for entry in entries:
