@@ -18,7 +18,8 @@ def decode_int32_buffer(value: str | np.ndarray) -> np.ndarray:
         if value.dtype != np.int32 or value.ndim != 1 or not value.flags.c_contiguous:
             raise ValueError("Decoded replay must be a contiguous, flat int32 array")
         return value
-    return np.frombuffer(pybase64.b64decode(value.encode("ascii")), dtype=np.int32)
+    # validate=True: SGLang sends plain base64; pybase64 skips its slow non-alphabet filtering pass.
+    return np.frombuffer(pybase64.b64decode(value, validate=True), dtype=np.int32)
 
 
 def decode_response_routes(response, *, observation=None):
