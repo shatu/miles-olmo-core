@@ -6,6 +6,7 @@ import pytest
 sglang_router = pytest.importorskip("sglang_router")
 
 from miles.backends.sglang_utils import sglang_router_api_client as module
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.utils.http_utils import GeneralHttpClientProvider
 
@@ -64,7 +65,7 @@ def client():
 
 
 async def test_completed_weight_update_explicitly_confirms_native_router_readiness(client, recorder):
-    await client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=True, weights_ready=True)
+    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=True, weights_ready=True)
     assert recorder.calls[0][1] == f"{ROUTER_URL}/add_worker?url={WORKER_URL}&weights_ready=true"
 
 
@@ -75,7 +76,7 @@ async def test_native_readiness_retries_transport_failures(client, monkeypatch, 
     monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: fake)
     sleep = mock.AsyncMock()
     monkeypatch.setattr(module, "_retry_sleep", sleep)
-    await client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=True, weights_ready=True)
+    await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=True, weights_ready=True)
     assert post.await_count == 2
     assert post.await_args_list[0] == post.await_args_list[1]
     assert "weights_ready=true" in post.await_args.args[0]
@@ -89,7 +90,7 @@ async def test_native_readiness_exhaustion_fails_closed(client, monkeypatch):
     monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: type("Client", (), {"post": post})())
     monkeypatch.setattr(module, "_retry_sleep", mock.AsyncMock())
     with pytest.raises(httpx.ReadTimeout):
-        await client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=True, weights_ready=True)
+        await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=True, weights_ready=True)
     assert post.await_count == 3
 
 
@@ -97,5 +98,5 @@ async def test_native_readiness_does_not_retry_http_rejection(client, monkeypatc
     post = mock.AsyncMock(return_value=_FakeResponse(status_code=409))
     monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: type("Client", (), {"post": post})())
     with pytest.raises(httpx.HTTPStatusError):
-        await client.add_worker(worker_url=WORKER_URL, worker_type="regular", use_legacy_api=True, weights_ready=True)
+        await client.add_worker(worker_url=WORKER_URL, worker_type=WorkerType.REGULAR, use_legacy_api=True, weights_ready=True)
     assert post.await_count == 1

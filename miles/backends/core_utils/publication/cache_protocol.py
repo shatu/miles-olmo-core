@@ -1,6 +1,7 @@
 """Coordinate our cache plugin using the pinned engine's existing API."""
 
 from miles.backends.sglang_utils import sglang_config
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 
 BACKEND = "olmo_policy_versioned_v1"
 
@@ -16,7 +17,7 @@ def enabled(args):
         and any(
             group.overrides.get("radix_cache_backend") == BACKEND
             for group in model.server_groups
-            if group.worker_type != "placeholder"
+            if group.worker_type != WorkerType.PLACEHOLDER
         )
         for model in config.models
     )

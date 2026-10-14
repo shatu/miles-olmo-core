@@ -13,6 +13,7 @@ import torch
 
 from miles.backends.core_utils.publication import cache_protocol, policy_versions
 from miles.backends.sglang_utils import sglang_config
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils.rollout_replay import TokenLogprobs
 from miles.utils.types import WeightVersionSpan, WeightVersionsPerCall
 
@@ -46,7 +47,7 @@ def validate_engine_cache_settings(args):
         if not model.update_weights:
             continue
         for index, group in enumerate(model.server_groups):
-            if group.worker_type == "placeholder":
+            if group.worker_type == WorkerType.PLACEHOLDER:
                 continue
             if (
                 group.overrides.get("disable_radix_cache", default) is not True
@@ -54,7 +55,7 @@ def validate_engine_cache_settings(args):
             ):
                 raise ValueError(
                     "Core in_place publication requires effective disable_radix_cache=true or radix_cache_backend=olmo_policy_versioned_v1 "
-                    f"for weight-updated model {model.name!r}, server group {index} ({group.worker_type}); "
+                    f"for weight-updated model {model.name!r}, server group {index} ({group.worker_type.value}); "
                     "sglang_config overrides take precedence over --sglang-disable-radix-cache"
                 )
 

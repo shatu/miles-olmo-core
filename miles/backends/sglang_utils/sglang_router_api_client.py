@@ -8,6 +8,7 @@ import httpx
 import sglang_router
 from packaging.version import parse
 
+from miles.backends.sglang_utils.sglang_api_client import WorkerType
 from miles.utils import infra_timeouts
 from miles.utils.http_utils import GeneralHttpClientProvider
 
@@ -29,13 +30,15 @@ class SGLangRouterApiClient:
     async def add_worker(
         self,
         worker_url: str,
-        worker_type: str,
+        worker_type: WorkerType,
         use_legacy_api: bool,
         bootstrap_port: int | None = None,
         weights_ready: bool = False,
     ):
         if use_legacy_api:
-            assert worker_type == "regular", "pd disaggregation is not supported in old router or miles router."
+            assert (
+                worker_type == WorkerType.REGULAR
+            ), "pd disaggregation is not supported in old router or miles router."
             if weights_ready:
                 return await self._confirm_weights_ready(worker_url)
             response = await infra_timeouts.request(
@@ -47,9 +50,9 @@ class SGLangRouterApiClient:
         else:
             payload = {
                 "url": worker_url,
-                "worker_type": worker_type,
+                "worker_type": worker_type.value,
             }
-            if worker_type == "prefill":
+            if worker_type == WorkerType.PREFILL:
                 payload["bootstrap_port"] = bootstrap_port
             response = await infra_timeouts.request(
                 GeneralHttpClientProvider.client(),

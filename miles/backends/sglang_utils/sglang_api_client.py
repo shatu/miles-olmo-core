@@ -1,6 +1,8 @@
 import asyncio
 import dataclasses
 import logging
+from enum import Enum
+from typing import Any
 
 import httpx
 
@@ -8,6 +10,20 @@ from miles.utils import infra_timeouts
 from miles.utils.http_utils import GeneralHttpClientProvider
 
 logger = logging.getLogger(__name__)
+
+
+class WorkerType(Enum):
+    REGULAR = "regular"
+    PREFILL = "prefill"
+    DECODE = "decode"
+    PLACEHOLDER = "placeholder"
+
+    @classmethod
+    def from_server_info(cls, server_info: dict[str, Any]) -> "WorkerType":
+        mode = server_info["disaggregation_mode"]
+        if mode == "null":
+            mode = "regular"
+        return cls(mode)
 
 
 def _compute_headers(api_key: str | None) -> dict[str, str]:
