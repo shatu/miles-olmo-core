@@ -41,9 +41,11 @@ async def producer(request):
         async_data_buffer_capacity_factor=1,
         dynamic_sampling_filter_path=None,
         reward_key=None,
+        namespaced_radix_cache=False,
     )
     p = cls.__new__(cls)
     p.args, p.data_source = args, Ledger()
+    p._curr_kv_cache_namespace = None
     buffer = RefreshPolicyDataBuffer if cls is RefreshingRolloutFn else HomogeneousPolicyDataBuffer
     p._output = buffer(DataBufferConstructorInput(args, lambda groups: p.data_source.acknowledge_groups([groups])))
     p._publication_paused = p._refreshing = p._stopping = False
