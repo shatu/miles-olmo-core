@@ -168,7 +168,8 @@ async def test_prepared_handoff_carries_rollout_audit_context(tmp_path, monkeypa
     e = SimpleNamespace(
         _core_prepared_batch=SimpleNamespace(consume=consume),
         _rollouts_since_publish_of_model_id={None: 0},
+        last_get_rollout_id_of_model_id={},
     )
     assert await RolloutExecutor.core_get_prepared(e, 7) is batch
     assert logger._context_var.get({}) == {}
-    assert e._core_prepared_batch is None and e.rollout_id == 7
+    assert e._core_prepared_batch is None and e.last_get_rollout_id_of_model_id == {None: 7}
