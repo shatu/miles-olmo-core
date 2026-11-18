@@ -51,8 +51,14 @@ _OLMO_MODELS: dict[str, str] = {
     # Olmo 3.5 Tiny (olmo3moe, 12.5B total / 0.8B active, KDA hybrid): ledger H196's s-c SFT (C12 mix) on the base
     # mid-trained without agentic data; the checkpoint the OLMo team's recent MILES RL runs use.
     "olmo35-tiny-s-c-noag": "/weka/olmo-3p5-post-checkpoints/abhishekr/s-c-gpu/s-c-noag-s34521/hf_step63494",
+    # The same Tiny after the OLMo team's math/science RL (ledger H235, arm B2048-Noff-LR6e6: Dolci prompts with the
+    # H196 verifiers, batch 2048, LR 6e-6), the run's final HF export after update 100 (= checkpoints/core/
+    # rollout_0000099). The export carries the SFT checkpoint's chat template.
+    "olmo35-tiny-h235-rl100": (
+        "/weka/olmo-3p5-post-checkpoints/robertb/miles/h235-continue-204800-20261117/B2048-Noff-LR6e6/export-hf"
+    ),
 }
-_OLMO_MODEL_NAMES = Literal["olmo35-tiny-s-c-noag"]
+_OLMO_MODEL_NAMES = Literal["olmo35-tiny-s-c-noag", "olmo35-tiny-h235-rl100"]
 
 app = typer.Typer()
 
