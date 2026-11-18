@@ -1,13 +1,23 @@
 """OLMo-core policy at the shared MILES orchestration boundaries."""
 
 import asyncio
+import os
 
 from miles.backends.hooks import BackendHooks
 from miles.utils.async_utils import run
 from miles.utils.function_registry import load_function
 
+# "standalone" (default): miles.backends.core_utils.standalone, Miles' own loop, data
+# source and async producer. "open_instruct": Open Instruct's loader and policies.
+LOADER_ENV = "MILES_OLMO_CORE_LOADER"
+
 
 def load_args(*, extra_args_provider):
+    loader = os.environ.get(LOADER_ENV, "standalone")
+    if loader == "standalone":
+        return load_function("miles.backends.core_utils.standalone.load_args")(extra_args_provider=extra_args_provider)
+    if loader != "open_instruct":
+        raise ValueError(f"{LOADER_ENV} must be standalone or open_instruct, got {loader!r}")
     # Open Instruct is optional for the other training backends.
     return load_function("open_instruct.miles.configuration.arguments.load_core_args")(
         extra_args_provider=extra_args_provider
@@ -15,7 +25,9 @@ def load_args(*, extra_args_provider):
 
 
 def configure_rollout(args, user_eval_path: str | None) -> None:
-    if not args.fully_async:
+    # Standalone runs keep Miles' fully async producer: the managed producers below
+    # drive Open Instruct's data source and cancel unfinished groups at publication.
+    if not args.fully_async or getattr(args, "olmo_core_loader", None) == "standalone":
         return
     original_path = args.rollout_function_path
     mode = getattr(getattr(args, "olmo_core", None), "publication_mode", "barrier")
