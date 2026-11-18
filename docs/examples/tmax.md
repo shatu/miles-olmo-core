@@ -1,0 +1,608 @@
+---
+title: "TMax Terminal-RL"
+description: "Terminal-RL on the TMax tasks with per-task Podman sandboxes: sync and fully-async GRPO, plus on-policy distillation."
+# Generated from examples/tmax/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
+---
+GRPO and on-policy distillation on the 14.6k TMax terminal tasks
+([`allenai/tmax-15k-open-instruct`](https://huggingface.co/datasets/allenai/tmax-15k-open-instruct)),
+the Miles port of open-instruct's Terminal-RL recipe with the `swerl_vanillux_sandbox` environment.
+Every episode runs in a fresh container from the task's prebuilt image, the only tool is `bash`, and the
+reward is the task's `tests/test.sh` verdict, uploaded only at submit time so the policy cannot read it.
+
+Validated end to end on B300s (Beaker `ai2/holmes`):
+
+| Mode | Launcher flags | Validated with |
+|---|---|---|
+| Synchronous GRPO, colocated, 4 GPUs | (default) | Qwen3.5-9B, 3 steps |
+| Fully-async GRPO, 4 GPUs | `--async-rollout-gpus 2` | Qwen3.5-9B, 4 steps |
+| On-policy distillation (sync and async), 4 GPUs | `--opd-teacher tmax-4b` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 + 4 steps |
+| Pure on-policy distillation, fully async, 4 H100s (Jupiter) | `configs/smoke_opd_4b_async_jupiter_fused.yaml` | `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B`, 3 steps, 2026-10-23 |
+| Pure on-policy distillation with the teacher on an SGLang server, same and cross size | `configs/smoke_opd_{4b,9b_to_4b}_sglang_jupiter.yaml` | `allenai/tmax-4b` and `allenai/tmax-9b` into `hamishivi/Qwen3.5-4B`, 3 steps each, 2026-10-23 |
+| Pure OPD across sizes on 4 nodes, the teacher on 2 SGLang servers on the rollout nodes | `configs/prod_4node_gateway_opd_9b_to_4b.yaml` | `allenai/tmax-9b` into `hamishivi/Qwen3.5-4B`, 194 steps, 2026-10-28 |
+| Synchronous GRPO for Qwen3.5 MoE, EP 4 and R3, 4 GPUs | `run_tmax_qwen3_5_moe.py`, `configs/smoke_moe_sync.yaml`, `configs/smoke_moe_sync_gateway*.yaml` | Qwen3.5-35B-A3B, 3 steps, 2026-10-20 and (podman fleet) 2026-11-11 |
+| open-instruct's production recipe, fully async on 4 nodes (32x B300), 64k context | `configs/prod_4node.yaml` | Qwen3.5-9B, training on Beaker since 2026-10-16 |
+
+| Read | For |
+|---|---|
+| This page | What the example does, how an episode runs, how to run it, results, findings |
+| [beaker/README.md](/examples/tmax/beaker) | Running on Beaker: submissions, run names and resume, images, mirrors, watching a run, failure triage |
+| [DEVELOPING.md](https://github.com/radixark/miles/blob/main/examples/tmax/DEVELOPING.md) | How the port plugs into Miles, local development and tests, the validation ladder, conventions, history |
+| [ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md) | Open work by priority, decisions taken |
+| [INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md) | Investigations from the production runs: evidence, options, open decisions |
+| [Miles vs open-instruct](/deep-dive/open-instruct-comparison) | Every framework, harness and infrastructure difference, and the flag-by-flag mapping of the production recipe |
+| [OPD across frameworks](/deep-dive/opd-across-frameworks) | How Miles, open-instruct and Prime-RL place the distillation teacher, handle teachers of another size and several teachers, and put the teacher signal into the loss |
+
+## Files
+
+| File | Role |
+|---|---|
+| `run_tmax_qwen3_5.py` | Launcher: `prepare` (download, extract tasks, prompt JSONL, torch_dist conversion) and `execute` |
+| `run_tmax_qwen3_5_moe.py` | The same launcher for Qwen3.5 MoE (Qwen3.5-35B-A3B): adds expert parallelism, R3 and optional MTP training |
+| `tmax_agent_function.py` | Agent loop for `agentic_tool_call.generate`, plus the over-sampling `abort` hook |
+| `tmax_sandbox.py` | Per-episode container: the episode logic shared by both backends, and the podman backend (a Docker-API socket), ported from open-instruct |
+| `tmax_gateway.py` | The gateway backend: containers on a LiteRegistry podman fleet through literegistry's own client, after open-instruct's `GatewayBackend` |
+| `generate.py` | Reward function (`None` drops the group), the generate function that adds an SGLang OPD teacher's log-probs, and pure OPD's reward post-process |
+| `tmax_metrics.py` | Per-rollout W&B metrics open-instruct logs: episodes and tools, solve rates before the filter, trained-sample lengths and advantages |
+| `tmax_prompts.py` | open-instruct's system prompt |
+| `configs/` | Experiment configs: open-instruct's production recipe on one node (`prod_1node.yaml`) and on its 4 nodes (`prod_4node.yaml`), and 4-GPU smoke tests (`smoke_2node.yaml` spans 2 nodes, `smoke_gateway.yaml` uses the podman fleet, `smoke_opd*.yaml` distill; `smoke_moe_sync*.yaml` are Qwen3.5-35B-A3B) |
+| `beaker/` | `submit.py` (config -> Beaker job, pinned to a commit), the job's entrypoint, open-instruct's vendored podman bring-up, and the registry mirror tooling |
+| `docker/` | `build_train_image.sh`: the training image, built from `docker/Dockerfile` at `HEAD` and uploaded to Beaker under its commit |
+| `tools/` | `watch_run.py` (one line per step, slow sync or failure of a running Beaker experiment) and `check_samples.py` (trained samples vs episode traces) |
+
+## How an episode runs
+
+The loop follows open-instruct's `vllm_utils.process_request` with the `swerl_vanillux_sandbox` env as run in its
+production script (`--tool_call_format_error_feedback` off, `SWERL_RESET_FAILURE_ZERO_REWARD=1`):
+
+1. `agentic_tool_call.generate` opens a TITO session and calls `tmax_agent_function.run` in a process of its own.
+2. `run` starts a container from `metadata.image` (`sleep infinity`, a 4 GB memory limit requested) on one of the podman
+   daemons, uploads the task's `environment/seeds`, and installs a wrapper that keeps `cwd` and exported variables
+   across commands. A failed start is retried 5 times (1-16 s backoff); a daemon that fails to connect is benched
+   for 300-330 s. If it never starts, the episode scores 0 and stays in its group, through a one-token turn
+   (`start_failure: drop` drops the group instead).
+3. Up to `max_steps` (64) bash calls: a chat completion with the single `bash` tool through the session server,
+   each command run with a 120 s timeout, output truncated head/tail at 10k characters and followed by
+   `(exit_code=N)`. Calls to other tools are ignored; a turn without a bash call ends the episode. A command that
+   fails for infra reasons is reported as `Step 'bash' failed: ...` and the episode goes on; a vanished container
+   is recreated once. Each step, a submit's test run included, is capped by `tool_call_timeout_s` (120 s, open-instruct's
+   `tool_call_timeout`): an overrun is reported as `Step 'bash' timed out ...` and the episode goes on, which also
+   bounds a hung podman call. As in open-instruct's production runs, a test run longer than 120 s therefore cannot
+   earn the reward; raise `tool_call_timeout_s` to stop reproducing that.
+4. The episode ends on the submit marker (`echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`), which uploads `tests/`,
+   runs `test.sh` (600 s) and reads `/logs/verifier/reward.txt`; or with reward 0 on no tool call, a
+   length-truncated turn, a full context, the step limit, an OOM-killed sandbox, or `episode_timeout_s` (off).
+
+Each finished episode logs `episode done: reward=... end=... turns=...`, and with `trace_dir` set appends a JSONL
+record (messages, reward, metrics) to `<trace_dir>/<exp_name>/` (open-instruct's `--save_traces`).
+
+## Run
+
+Experiments are YAML configs of the launcher's fields, as open-instruct's `configs/train_configs/`: pass one to
+`prepare` / `execute`, and command-line flags override it.
+
+```bash
+python examples/tmax/run_tmax_qwen3_5.py prepare examples/tmax/configs/smoke_sync.yaml   # download, convert
+python examples/tmax/run_tmax_qwen3_5.py execute examples/tmax/configs/smoke_sync.yaml --num-rollout 1
+```
+
+Sandboxes come from one of two backends (`sandbox_backend`):
+
+- **`podman`** (the default) runs containers on Podman daemons the job brings up itself. It needs a
+  Docker-compatible API socket whose containers can pull `docker.io/hamishi740/swerl-tmax-v3:*`, and
+  `pip install docker`. The launcher hands the sockets in `TMAX_DOCKER_HOST` (comma-separated) to the rollout;
+  `docker_host` overrides them.
+- **`gateway`** runs containers on a LiteRegistry podman fleet through its gateway (`gateway_url`, or
+  `TMAX_GATEWAY_URL`), so no sandbox shares a node with training or SGLang. On Beaker the head starts the gateway
+  itself ([Sandboxes on a podman fleet](/examples/tmax/beaker#sandboxes-on-a-podman-fleet-gateway-backend)).
+
+### Qwen3.5 MoE
+
+`run_tmax_qwen3_5_moe.py` runs the same recipe for Qwen3.5-35B-A3B, with every field of the dense launcher plus
+`expert_model_parallel_size`, `rollout_routing_replay` (R3, on), `mtp_training` (off; with it the MTP head is trained
+and drafts EAGLE speculative decoding), `sglang_ep_size` and `sglang_moe_runner_backend`; its docstring has the
+details. On 80GB GPUs the bf16 weights (72 GB) need `rollout_num_gpus_per_engine` > 1, as in
+`configs/smoke_moe_sync_ceres.yaml` (8x H100). The default
+student, `Qwen3.5-35B-A3B-tmax-template`, is
+[`shatu/Qwen3.5-35B-A3B`](https://huggingface.co/shatu/Qwen3.5-35B-A3B) (private): `Qwen/Qwen3.5-35B-A3B` with
+`hamishivi/Qwen3.5-9B`'s chat-template change (see [Findings](#required-settings)).
+
+```bash
+python examples/tmax/run_tmax_qwen3_5_moe.py execute examples/tmax/configs/smoke_moe_sync.yaml
+```
+
+On Beaker the config's `beaker:` section names the launcher (`launcher: examples/tmax/run_tmax_qwen3_5_moe.py`).
+
+### Beaker
+
+```bash
+python examples/tmax/beaker/submit.py examples/tmax/configs/prod_4node.yaml [--dry-run] [-- --num-rollout 10]
+```
+
+`submit.py` turns a config's `beaker:` section into a Beaker job pinned to the current commit; its entrypoint brings
+up open-instruct's podman setup on every node and runs `prepare` + `execute`. Each submission is its own run
+(`<exp_name>_YYYYMMDD_HHMMSS`), and its Beaker retries resume from that run's checkpoints. Everything else (the
+`beaker:` keys, multi-node layout, images, pull credentials and mirrors, checkpoints, watching a run, failures) is in
+[beaker/README.md](/examples/tmax/beaker).
+
+## Mapping from open-instruct
+
+Every flag of open-instruct's production script and its counterpart here is in the
+[comparison's flag-by-flag table](/deep-dive/open-instruct-comparison#flag-by-flag-the-production-recipe).
+The deliberate algorithmic difference is the loss: open-instruct trains with DPPO, which Miles does not have, so
+the port uses PPO clip (0.2 / 0.28) around the rollout log-probs.
+
+## Results
+
+### RLVR on `hamishivi/Qwen3.5-4B`, 2 nodes
+
+`configs/prod_2node_gateway_4b_parallel64.yaml` on 2x 8 B300, run `tmax_prod2node_gateway_qwen35_4b_p64_20261028_064439`
+(Beaker `01M60M1X1A5M1D3HXNY123BYYG`, commit `3ec4925326`): the GRPO recipe of the 9B runs below on the 4B, with one
+training node and one rollout node, and sandboxes on the `podman-parallel64-20261027` fleet. It is the RLVR baseline
+for the cross-size OPD run. About 6 minutes per step. It trained 309 steps from 2026-10-28; on 2026-10-30 a node
+drained for reimaging ended it, and its image tag had been deleted upstream, so the retries could not start
+(resumable from `iter_0000309` on the rebuilt training image):
+
+| Steps | Solve rate before the filter | All-pass / all-fail groups | Entropy | Train/rollout gap | KL to base |
+|---|---|---|---|---|---|
+| 0-39 | 0.43 | 7% / 28% | 0.38 | 0.008 | 0.002 |
+| 40-79 | 0.52 | 11% / 27% | 0.34 | 0.008 | 0.008 |
+| 80-119 | 0.56 | 19% / 22% | 0.30 | 0.008 | 0.017 |
+| 120-159 | 0.63 | 28% / 20% | 0.26 | 0.008 | 0.034 |
+| 160-199 | 0.61 | 24% / 23% | 0.25 | 0.008 | 0.054 |
+| 200-239 | 0.62 | 28% / 21% | 0.24 | 0.009 | 0.076 |
+| 240-279 | 0.63 | 32% / 21% | 0.25 | 0.010 | 0.113 |
+| 280-309 | 0.65 | 34% / 20% | 0.24 | 0.010 | 0.122 |
+
+Greedy evaluations (k=5, `max-model-len` 67584, tmax repo `c98902cc`; TBlite on 1 GPU, TB2.1 on 2):
+
+| Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
+|---|---|---|
+| RLVR, step 80 | 0.372 / 0.530 | – |
+| RLVR, step 120 | 0.384 / 0.580 | – |
+| RLVR, step 160 | 0.450 / 0.620 | 0.153 / 0.270 |
+| RLVR, step 240 | 0.464 / 0.650 | 0.171 / 0.258 |
+| `allenai/tmax-4b` | 0.450 / 0.610 | 0.202 / 0.303 |
+| Base `hamishivi/Qwen3.5-4B` | 0.312 / 0.470 | 0.128 / 0.214 |
+
+It reaches `allenai/tmax-4b` on TBlite by step 160 (the cross-size OPD run below did by step 20-40) and passes it
+slightly by step 240. On TB2.1 this harness puts it below `allenai/tmax-4b`, but on the later tmax harness
+(`omni_agent` `0bcf7c54`, 2026-11-11, greedy k=5, 2 GPUs) steps 240 and 310 score 0.229 / 0.326 and 0.220 / 0.337
+against `allenai/tmax-4b`'s 0.222 / 0.326, so that gap was the harness's. Entropy fell from 0.38 to about 0.24 by
+step 160 and then held, unlike the 9B runs', whose entropy rose.
+
+### Pure OPD across sizes, `allenai/tmax-9b` into `hamishivi/Qwen3.5-4B`, 4 nodes
+
+`configs/prod_4node_gateway_opd_9b_to_4b.yaml` on 4x 8 B300, run `tmax_prod4node_gateway_opd_9b_to_4b_20261027_204218`
+(Beaker `01M5ZHJYVY7FAAKSQC7PAGJNJK`, then `01M60M1W1BTKF7G49SAJMKP8M7`, commit `eb8fcb7422`): open-instruct's
+`qwen35_4b_opd_from_tmax9b_4node_64k.sh`, with the teacher on 2 SGLang servers on the rollout nodes (14 rollout
+engines and 2 teacher GPUs) instead of on the learners. About 2.5-3.5 minutes per step. It lost a node to reimaging
+at step 196 on 2026-10-28 and was not resumed (resumable from `iter_0000194`). Compared with open-instruct's run (W&B
+`vjgol9zb`, 275 steps):
+
+| Steps | Reverse KL to the teacher, ours / open-instruct | Train/rollout gap, ours / OI | DPPO-masked tokens, ours / OI | Entropy | Raw reward |
+|---|---|---|---|---|---|
+| 0-39 | 0.128 / 0.158 | 0.074 / 0.043 | 3.8% / 1.8% | 0.56 | 0.56 |
+| 40-79 | 0.106 / 0.104 | 0.069 / 0.023 | 3.7% / 0.2% | 0.56 | 0.63 |
+| 80-119 | 0.099 / 0.102 | 0.064 / 0.026 | 3.1% / 0.3% | 0.54 | 0.68 |
+| 120-159 | 0.098 / 0.100 | 0.097 / 0.030 | 6.0% / 0.5% | 0.54 | 0.65 |
+| 160-194 | 0.098 / 0.097 | 0.102 / 0.026 | 5.5% / 0.4% | 0.55 | 0.67 |
+
+The distillation tracks open-instruct's (the same reverse KL throughout), but the train/rollout gap is 2-4 times
+open-instruct's and DPPO masks about ten times as many tokens, more after step 140; the cause is open
+([ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md)).
+
+Greedy evaluations (k=5, `max-model-len` 67584, tmax repo `c98902cc`; TBlite on 1 GPU, TB2.1 on 2 GPUs, since a
+1-GPU TB2.1 run takes about 8 h and was preempted at its 8 h guarantee):
+
+| Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
+|---|---|---|
+| OPD, step 20 | 0.436 / 0.630 | 0.164 / 0.258 |
+| OPD, step 40 | 0.452 / 0.640 | 0.202 / 0.315 |
+| OPD, step 60 | 0.478 / 0.690 | 0.187 / 0.326 |
+| OPD, step 100 | 0.438 / 0.680 | 0.198 / 0.281 |
+| OPD, step 140 | 0.466 / 0.700 | 0.178 / 0.326 |
+| OPD, step 195 | 0.480 / 0.700 | 0.180 / 0.292 |
+| `allenai/tmax-4b` | 0.450 / 0.610 | 0.202 / 0.303 |
+| Base `hamishivi/Qwen3.5-4B` | 0.312 / 0.470 | 0.128 / 0.214 |
+
+The 4B student reaches `allenai/tmax-4b` on TBlite pass@1 by step 20-40 and passes it on pass@5 from step 60
+(0.69-0.70); pass@1 stays at 0.44-0.48 after that. On TB2.1 it peaks at `allenai/tmax-4b`'s pass@1 at step 40
+(0.202) and stays a little below it after that (0.18-0.20), with pass@5 around `allenai/tmax-4b`'s (0.26-0.33 vs 0.30). Training past step 60 bought pass@5 only, so the run was not resumed.
+
+### GRPO from the 9B OPD run's step 80, 4 nodes
+
+`configs/prod_4node_gateway_grpo_from_opd80.yaml` on 4x 8 B300, run `tmax_prod4node_gateway_grpo_from_opd80_20261027_201957`
+(Beaker `01M5ZGA1A4BHCWKDYP7ZAEPPDY`, then `01M60M1V4QBQDE3XMG8ZQ0KR3R`, commit `286b0c0563`): the GRPO run's recipe
+below, started from the pure-OPD run's step-80 HF snapshot (recipe `tmax-opd-9b-step80`, which is also its
+reference model). About 8 minutes per step. Stopped at step 194 on 2026-10-29 (resumable from `iter_0000194`).
+Compared with the GRPO run from the base model at the same steps:
+
+| Steps | Solve rate before the filter, ours / from base | All-pass groups | Entropy, ours / from base | Train/rollout gap, ours / from base | KL to its start |
+|---|---|---|---|---|---|
+| 0-39 | 0.66 / 0.54 | 37% | 0.42 / 0.32 | 0.013 / 0.008 | 0.003 |
+| 40-79 | 0.69 / 0.61 | 44% | 0.60 / 0.30 | 0.017 / 0.007 | 0.024 |
+| 80-119 | 0.69 / 0.63 | 44% | 0.65 / 0.28 | 0.015 / 0.008 | 0.037 |
+| 120-159 | 0.70 / 0.64 | 45% | 0.59 / 0.32 | 0.017 / 0.009 | 0.037 |
+| 160-193 | 0.70 / 0.65 | 44% | 0.55 / 0.33 | 0.016 / 0.008 | 0.044 |
+
+| Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
+|---|---|---|
+| GRPO from OPD step 80, step 120 | 0.574 / 0.760 | – |
+| GRPO from OPD step 80, step 180 | 0.594 / 0.770 | 0.270 / 0.438 |
+| Its start, OPD step 80 | 0.584 / 0.770 (B300), 0.574 / 0.730 (A100) | 0.283 / 0.449 |
+
+RL did not move the OPD checkpoint: its solve rate stayed at 0.66-0.70 from step 40 while the run from the base
+model climbed toward it, and steps 120 and 180 evaluate at the starting checkpoint's level on both benchmarks. With 37-45% of sampled
+groups all-pass and about 20% all-fail, only about 35% of the rollouts train, against about 50% from the base model.
+Entropy rose from 0.42 to 0.65 by step 100, and the train/rollout gap stayed twice the base run's. Training only on tasks the starting checkpoint does not always solve is in
+[INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md#ideas-to-explore).
+
+These three runs went through the private fleet's mirror outage, a preemption and a full `oe-adapt` volume on
+2026-10-28 and 29; see [INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md).
+
+### Pure OPD, `allenai/tmax-9b` into `hamishivi/Qwen3.5-9B`, 4 nodes
+
+`configs/prod_4node_gateway_opd_9b.yaml` on 4x 8 B300, run `tmax_prod4node_gateway_opd_9b_20261027_022952` (Beaker
+`01M5XK2NCJAPFZ5M8G01659VZ5`, commit `b131645fa6`): open-instruct's terminal OPD recipe with a Megatron-mode teacher.
+Stopped after step 124; resumable from `iter_0000119` (step 120) with `--exp-name`. About 3-5 minutes per step.
+Training against open-instruct's identical run (W&B `6kyg0v64`) and the early transient are in
+[INVESTIGATIONS.md](https://github.com/radixark/miles/blob/main/examples/tmax/INVESTIGATIONS.md#2026-10-27-the-9b-pure-opd-runs-early-transient).
+
+Greedy evaluations of the HF snapshots (k=5, `max-model-len` 67584, tmax repo `c98902cc`; 2 GPUs or 1 GPU at the same
+trials per GPU, on Jupiter, Saturn and Holmes):
+
+| Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
+|---|---|---|
+| OPD, step 20 | 0.516 / 0.630 | 0.247 / 0.360 |
+| OPD, step 40 | 0.576 / 0.730 | 0.270 / 0.416 |
+| OPD, step 60 | 0.542 / 0.710 | 0.261 / 0.382 |
+| OPD, step 80 | 0.584 / 0.770 (B300), 0.574 / 0.730 (A100) | 0.283 / 0.449 |
+| Teacher `allenai/tmax-9b` | 0.538 / 0.710 | 0.276 / 0.438 (sampled) |
+| GRPO run below, best (step 240) | 0.528 / 0.780 | 0.258 / 0.371 |
+| Open-instruct OPD, step 40 / 80 (sampled, k=1) | 0.58, 0.54 | 0.281, 0.236 |
+| Base `hamishivi/Qwen3.5-9B` (sampled) | 0.418 / 0.660 | 0.191 / 0.337 |
+
+The student reaches the teacher by step 40 and stays there, as open-instruct's run did, and passes the GRPO run's
+best checkpoint in a sixth of the steps.
+
+### Gateway backend with open-instruct parity, 4 nodes
+
+`configs/prod_4node_gateway.yaml` on 4x 8 B300 (`ai2/holmes`), run `tmax_prod4node_gateway_qwen35_9b_20261020_092350`
+(Beaker `01M5C9ZQAM9J6P7D5FE9ZY4E43`, commit `7422022127`): the 4-node recipe below with sandboxes on the
+`podman-terminal-jupiter-head` LiteRegistry fleet, DPPO, Adam beta2 0.999 and seed 42. Training compared with
+open-instruct's `9b_dppo_repro_jupiter` (W&B `ut64ii7s`, `gyw0z542`) at the same steps:
+
+| Steps | Reward (pre-filter), open-instruct / ours | Response length, open-instruct / ours | Entropy | KL to base | Train/rollout gap | Lost sandboxes |
+|---|---|---|---|---|---|---|
+| 0-19 | 0.521 / 0.507 | 13.6k / 16.4k | 0.31 | 0.002 | 0.0072 | 0.7% |
+| 20-39 | 0.557 / 0.563 | 18.3k / 19.9k | 0.32 | 0.003 | 0.0080 | 1.4% |
+| 40-59 | 0.563 / 0.544 | 17.3k / 20.9k | 0.31 | 0.006 | 0.0076 | 0.5% |
+| 60-79 | 0.606 / 0.666 | 16.5k / 18.9k | 0.29 | 0.009 | 0.0071 | 0.5% |
+| 80-99 | 0.620 / 0.619 | 15.2k / 20.4k | 0.28 | 0.011 | 0.0072 | 0.4% |
+| 100-119 | 0.631 / 0.643 | 14.2k / 20.5k | 0.27 | 0.018 | 0.0081 | 0.3% |
+| 120-139 | 0.587 / 0.627 | 17.9k / 22.3k | 0.31 | 0.020 | 0.0089 | 1.1% |
+| 140-159 | 0.630 / 0.662 | 24.8k / 22.2k | 0.32 | 0.022 | 0.0084 | 0.4% |
+| 160-179 | 0.631 / 0.627 | 23.6k / 27.9k | 0.32 | 0.023 | 0.0082 | 0.9% |
+| 180-199 | 0.623 / 0.680 | 25.8k / 25.9k | 0.34 | 0.028 | 0.0086 | 0.4% |
+| 200-219 | 0.625 / 0.669 | 26.0k / 24.7k | 0.36 | 0.050 | 0.0093 | 0.3% |
+| 220-239 | 0.656 / 0.644 | 30.9k / 29.6k | 0.37 | 0.040 | 0.0095 | 0.3% |
+| 240-259 | 0.567 / 0.670 | 23.5k / 26.0k | 0.39 | 0.044 | 0.0099 | 2.5% |
+| 260-279 | 0.624 / 0.650 | 35.9k / 24.6k | 0.40 | 0.045 | 0.0099 | 0.2% |
+| 280-299 | 0.634 / 0.668 | 35.1k / 23.9k | 0.44 | 0.071 | 0.0114 | 0.7% |
+| 300-311 | 0.665 / 0.653 | 31.2k / 26.7k | 0.49 | 0.047 | 0.0116 | 0.4% |
+
+- **Sandboxes.** No episode failed to start in 312 steps. Lost sandboxes are mostly the policy's own memory and
+  process-limit kills (scored 0); fleet losses drop their group.
+- **Preemptions.** Six in two days: five by workspace-group fair share just after the 8 h minimum runtime, one by a
+  node drained for reimaging. The head closed the 263-432 containers it held on the fleet each time, and the next
+  attempt resumed from the latest checkpoint (`save_interval: 5`).
+- **Speed.** About 7 minutes per step.
+- **Rising entropy.** Entropy climbs from step 260, with the train/rollout gap.
+
+Greedy evaluations of the kept HF snapshots (k=5, 2 GPUs, `max-model-len` 67584, tmax repo `c98902cc`).
+Open-instruct's and the base model's numbers are sampled (T=0.7), so the comparison is approximate:
+
+| Model | TBlite pass@1 / pass@5 | TB2.1 pass@1 / pass@5 |
+|---|---|---|
+| Ours, step 120 | 0.496 / 0.700 | 0.229 / 0.360 |
+| Ours, step 160 | 0.484 / 0.710 | 0.222 / 0.382 |
+| Ours, step 200 | 0.472 / 0.720 | 0.258 / 0.404 |
+| Ours, step 240 | 0.528 / 0.780 | 0.258 / 0.371 |
+| Ours, step 280 | 0.490 / 0.690 | 0.236 / 0.382 |
+| Ours, step 300 | 0.478 / 0.680 | 0.238 / 0.360 |
+| Ours, step 320 | 0.470 / 0.660 | 0.240 / 0.360 |
+| Ours, step 340 | 0.516 / 0.720 | 0.207 / 0.315 |
+| Ours, step 360 | 0.514 / 0.750 | 0.238 / 0.326 |
+| Open-instruct, step 120 / 240 / 360 (sampled) | 0.524 / 0.760, 0.574 / 0.790, 0.582 / 0.790 | 0.229 / 0.360, 0.249 / 0.393, 0.301 / 0.416 |
+| Base `hamishivi/Qwen3.5-9B` (sampled) | 0.418 / 0.660 | 0.191 / 0.337 |
+
+The TBlite evals of steps 200, 280 and 300 lost 10 trials each (the same 8 tasks) to Docker Hub's anonymous pull
+limit, because their `--mirror-url` named mirrors that no longer existed; without those tasks they score 0.487-0.496
+pass@1. Step 240 is a rerun through live mirrors (the first run: 0.506 / 0.770), as are all the TB2.1 evals of
+steps 200-300. Most remaining errors are 120 s environment-setup timeouts, counted as failures.
+
+Sampled in open-instruct's exact setup (T=0.7, top_p 0.95, 65536 tokens, 8 concurrent), steps 240 and 360 score
+TBlite 0.512 / 0.780 and 0.506 / 0.740, TB2.1 0.258 / 0.382 and 0.258 / 0.360: within about 0.02 of greedy, so
+decoding does not explain the gap to open-instruct. A second sampled run of step 240 (same settings, 2 GPUs,
+2026-10-30) scored TBlite 0.538 / 0.750 and TB2.1 0.258 / 0.382: the two sampled TBlite runs differ by 0.026 pass@1,
+about the run-to-run noise. The run was stopped at step 440 (2026-10-24).
+
+### Production recipe, 4 nodes
+
+`configs/prod_4node.yaml` on 4x 8 B300 (`ai2/holmes`), run `tmax_prod4node_qwen35_9b_20261016_001037` (commit
+`edf2c7ae3e`, session server v2): 8 prompts x 32 samples per step, 64k tokens per episode, fully async with 16
+SGLang engines and 512 episodes in flight.
+
+| Step | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| loss | 0.022 | 0.025 | 0.012 | 0.032 | 0.008 | 0.042 | 0.027 | 0.057 | 0.025 | 0.044 | 0.030 |
+| grad_norm | 0.084 | 0.082 | 0.051 | 0.076 | 0.101 | 0.066 | 0.079 | 0.086 | 0.076 | 0.066 | 0.056 |
+| `rollout/raw_reward_unfiltered` | 0.41 | 0.40 | 0.65 | 0.43 | 0.29 | 0.40 | 0.27 | 0.50 | 0.38 | 0.34 | |
+| `rollout/fully_async/avg_staleness` | 0 | 1 | 2 | 3 | 4 | 3 | 1.6 | 1.9 | 2.1 | 2.1 | |
+
+- **Speed.** Step 0 trained 41 minutes after the replicas started, then a step about every 5 minutes.
+- **Weight syncs** took 1.5-8 s, with an occasional 30-50 s one.
+- **Train/rollout agreement.** `train/train_rollout_logprob_abs_diff` stayed at 0.0066-0.0068.
+- **Session-collect failures:** none.
+- **Episodes.** Over the first 5,705:
+  - mean reward 0.38, mean 38 turns;
+  - ended by submitting 62%, at the 64-step limit 30%, with no tool call 7%, with a full context 1.3%, on a
+    length-truncated turn 0.1%;
+  - 0.19 failed or timed-out tool steps per episode;
+  - median episode 4 minutes (p90 10), 48% of it in model calls and 19% in sandbox commands.
+
+### Smoke tests (4x B300, 64-prompt subset, 4 prompts x 4 samples per step, 16k tokens per episode)
+
+Synchronous GRPO, Qwen3.5-9B:
+
+| Step | Episodes submitted | Mean episode time | pg_loss | grad_norm | train/rollout KL |
+|---|---|---|---|---|---|
+| 0 | 62% | 373 s | 0.014 | 0.36 | 3e-4 |
+| 1 | 56% | 250 s | 0.0068 | 0.21 | 3e-4 |
+| 2 | 25% | 109 s | -0.0038 | 0.21 | 3e-4 |
+
+Synchronous GRPO, Qwen3.5-35B-A3B (`smoke_moe_sync.yaml`: EP 4, R3, one GPU per engine; Beaker
+01M5BY9E3KFB46DGXS7WDHX2Z5, 2026-10-20). Step 0's groups were all uniform, so its advantages, loss and gradient are 0.
+Weight syncs took 14-17 s; steps took 2088 / 1133 / 472 s, mostly rollout (the first includes sandbox image pulls).
+
+| Step | Episodes submitted | Mean episode time | pg_loss | grad_norm | train/rollout KL | train/rollout \|Δ log-prob\| |
+|---|---|---|---|---|---|---|
+| 0 | 75% | 332 s | 0 | 0 | 5e-4 | 0.0094 |
+| 1 | 62% | 216 s | 0.039 | 0.22 | 4e-4 | 0.0076 |
+| 2 | 19% | 156 s | -0.011 | 0.063 | 4e-4 | 0.0078 |
+
+The same smoke with sandboxes on the podman-jupiter128-20261105 fleet, the image tmax-miles-train-d0831a475b and
+storage on oe-adapt-default (`smoke_moe_sync_gateway.yaml` and its priority-high twin `_high`, Beaker
+01M751K3M862SBS8Y8P2X66XTY and 01M7528F31RP9J3XSS9SMMQ9BE, 2026-11-11) trained 3 steps twice: weight syncs 10-16 s,
+train/rollout |Δ log-prob| 0.0063-0.0090, grad_norm 0.17-0.18 at step 1 (steps 0 and 2 were all-uniform groups).
+On one Jupiter node (8x H100 80GB, `smoke_moe_sync_gateway_jupiter.yaml`: two 4-GPU engines with SGLang EP 4,
+training EP 8) the rollout ran, but the first training step ran out of memory: the torch log-prob backend's fp32
+logits for ~8k tokens needed 8 GiB next to the trainer's 49 GB and the paused colocated engine's 27 GB. With
+`--log-probs-backend fused` (`_jupiter_fused`) the output layer's bf16 logits for one ~16k-token episode (7.4 GiB) still
+did not fit, and with context parallelism 2 added (`_jupiter_fused_cp2`; Megatron accepts CP 2 with EP 8) the GPU
+was full in the linear-attention forward: the trainer holds ~36 GB before any data and the paused engine keeps
+27 GB after releasing its weights and KV cache. The colocated 35B-A3B smoke is parked on H100 (2026-11-11).
+Untried: one SGLang engine over all 8 GPUs (upstream's 8x H100 layout), SGLang without CUDA graphs, or 2 nodes.
+
+Fully-async GRPO, Qwen3.5-9B, 2 training + 2 rollout GPUs: 4 steps, grad_norm 0.40 / 0.28 / 0.23 / 0.22,
+train/rollout KL 3e-4 to 4e-4, at most 1 weight version stale, no stale or aborted groups.
+
+On-policy distillation, `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B` (`--opd-kl-coef 1.0`; these runs rendered
+with `enable_thinking=false`, off the models' training distribution, so they validate the pipeline, not the numbers):
+
+| | Step 0 | Step 1 | Step 2 | Step 3 |
+|---|---|---|---|---|
+| Sync: teacher reverse KL per token | 0.178 | 0.168 | 0.150 | |
+| Sync: grad_norm | 6.0 | 5.2 | 4.4 | |
+| Async: teacher reverse KL per token | 0.150 | 0.187 | 0.202 | 0.104 |
+| Async: grad_norm | 5.3 | 5.5 | 4.4 | 2.8 |
+| Async: max staleness (versions) | 0 | 1 | 2 | 3 |
+
+The step-0 reverse KL agrees with an independent measurement: scoring the student's own trajectories with
+both models through vLLM `prompt_logprobs` gave 0.175 nats per assistant token (p90 0.61, 6.6% of tokens
+above 1 nat).
+
+Pure on-policy distillation on today's code (2026-10-23, `smoke_opd_4b_async_jupiter_fused.yaml`, Beaker
+`01M5K694GXJ85TX6RZ9A014QTH`): `allenai/tmax-4b` into `hamishivi/Qwen3.5-4B` with thinking on, `opd_pure`, DPPO, session
+server v2, sandboxes on the podman fleet, fully async on 2 + 2 of Jupiter's H100s through the CUDA
+forward-compatibility driver:
+
+| | Step 0 | Step 1 | Step 2 |
+|---|---|---|---|
+| Teacher reverse KL per token (`train/opd_reverse_kl`) | 0.179 | 0.265 | 0.153 |
+| Advantage (`rollout/advantages`) | -0.183 | -0.272 | -0.178 |
+| Task reward, logged only (`rollout/raw_reward`) | 0.81 | 0.375 | 0.375 |
+| grad_norm | 4.8 | 6.2 | 3.9 |
+| train/rollout log-prob gap | 0.0075 | 0.0099 | 0.0087 |
+| KL to the base model (k3) | 0 | 0.0004 | 0.0005 |
+| Max staleness (versions) | 0 | 1 | 2 |
+
+The trained reward is 0 at every step and the advantage is minus the batch's reverse KL, so the OPD term is all
+that trains. 59 episodes, 0 sandbox failures; 28 of them filled the 16k context. The teacher forward took 1.5-2 s
+of each step, weight syncs 0.2-0.3 s. The first submission of this smoke, on the default log-prob backend, trained
+step 0 and ran out of memory at step 1 (`01M5K4WN5P1HCVA1N2AY8C8MTS`; see Findings).
+
+The same smoke with the teacher on an SGLang server (`opd_teacher_mode: sglang`, 2 training + 1 rollout + 1 teacher
+GPU), same size (`smoke_opd_4b_sglang_jupiter.yaml`, `01M5MYGFRPDS69ENBPCRKEJ626`) and cross size, `allenai/tmax-9b`
+into the 4B (`smoke_opd_9b_to_4b_sglang_jupiter.yaml`, `01M5MZFMZ2F5E85KXKXG5HA61E`):
+
+| | Step 0 | Step 1 | Step 2 |
+|---|---|---|---|
+| tmax-4b teacher: reverse KL per token | 0.220 | 0.210 | 0.200 |
+| tmax-4b teacher: grad_norm | 5.5 | 4.9 | 4.9 |
+| tmax-9b teacher: reverse KL per token | 0.159 | 0.169 | 0.135 |
+| tmax-9b teacher: grad_norm | 4.2 | 9.2 | 3.4 |
+| Both: max staleness (versions) | 0 | 1 | 2 |
+
+Trained reward 0 and advantage = minus the reverse KL in both, as with the Megatron teacher; train/rollout gap
+0.007-0.011; every teacher request answered (74 for tmax-9b, none retried). Step times 380 / 23 / 113 s (tmax-4b) and
+455 / 69 / 264 s (tmax-9b), the first including compilation. The first two submissions of the same-size smoke failed
+on bugs since fixed: the teacher was never called (`01M5MX4X615AD5ZGR0KF36DJPY`, see Findings) and the wrapper lacked
+the agentic generate's flags (`01M5MY8EV6WAHDYCSSZYGNF4YN`).
+
+With two teacher servers (`opd_teacher_gpus: 2`, Ray actors of one GPU each: 1 training + 1 rollout + 2 teacher GPUs,
+`smoke_opd_9b_to_4b_sglang_2teachers_jupiter.yaml`, `01M5XS754X4TP6GRTAXJHMWZH7`, commit `6f247ed426`), the same
+cross-size pair trained 3 steps: reverse KL 0.167 / 0.179 / 0.209, grad_norm 4.7 / 4.1 / 5.1, train/rollout gap
+0.009-0.013, trained reward 0. The launcher listed both servers (ports 30100 and 30101) and every one of the 67
+teacher requests was answered (64 by the first server, 3 by the second: at this smoke's concurrency requests rarely
+overlap, and the least-busy choice then broke ties toward the first server; since `eb8fcb7422` ties go round-robin).
+The teachers' placement on nodes other than the head first ran in the cross-size 4-node run above.
+
+For the 2B pair (`smoke_opd_2b.yaml`, not yet run on Beaker), scoring `hamishivi/Qwen3.5-2B`'s own trajectories
+(8 tasks x 2 at 16k, thinking off) with `allenai/tmax-2b` through vLLM gave 0.48 nats per assistant token (p90 1.75,
+15% of tokens above 1 nat). Each 2B model solved 1 of the 16 episodes.
+
+## Findings
+
+### Required settings
+
+- **`--tito-model qwen35` does not set SGLang's parsers.** `resolve_reasoning_and_tool_call_parser` is only
+  called from test utilities, so without `--sglang-reasoning-parser qwen3 --sglang-tool-call-parser
+  qwen3_coder` the engines return the model's `<tool_call>` XML as plain content, `tool_calls` is empty, and
+  every episode ends after one turn with reward 0. The launcher passes both.
+- **Zero-variance filter.** Qwen3.5-9B is very consistent per task: in a local check, four tasks were solved
+  4/4, 4/4, 0/4 and 0/4. With 4 samples per prompt almost every group is all-pass or all-fail, the filter
+  drops it, and a synchronous step never fills (the progress bar sits at 0/16 while the loop cycles through
+  the prompt pool without any error). Use 8 samples per prompt and a large prompt pool for real runs,
+  `--no-filter-zero-std` for smoke tests, and always with OPD, where uniform groups still carry signal.
+- **Thinking.** `allenai/tmax-4b`, `allenai/tmax-9b`, `hamishivi/Qwen3.5-4B`/`-9B` and stock Qwen3.5-4B and up
+  all open `<think>` by default, as does Miles' `qwen35` template, and open-instruct trained with that default.
+  The 2B checkpoints default to thinking off: `allenai/tmax-2b` and `hamishivi/Qwen3.5-2B` ship stock
+  Qwen3.5-2B's template byte for byte, whose generation prompt closes an empty think block. Each `_RECIPES` entry
+  follows its checkpoint's default. (The 4B OPD runs in the results below predate this and rendered with
+  `enable_thinking=false`.) SGLang's Qwen3.5 reasoning
+  detector treats `<tool_call>` as an implicit end of reasoning, so turns parse either way. vLLM's `qwen3`
+  reasoning parser does not: for a model that emits no `</think>` it files the whole turn as reasoning and
+  drops every tool call. Serve these checkpoints in vLLM with `--language-model-only` (they ship no
+  image-processor config).
+
+- **The checkpoint's chat template is not used in training.** `--tito-model qwen35` replaces it with Miles'
+  `qwen3.5_fixed.jinja` with `preserve_thinking` (also handed to SGLang), which keeps every assistant turn's
+  reasoning, and TITO keeps each turn's generated tokens as they were. `hamishivi/Qwen3.5-9B` (and
+  `shatu/Qwen3.5-35B-A3B`) differ from Qwen's checkpoints only in the template line that keeps past reasoning
+  (`{%- if reasoning_content %}` for `{%- if loop.index0 > ns.last_query_index %}`), so the change matters for
+  evals and other consumers of the checkpoint's own template. Qwen3.5-35B-A3B's template and tokenizer are
+  byte-identical to Qwen3.5-9B's.
+- **R3 payloads in synchronous mode.** The session server sends only each turn's new routing rows unless
+  `--pause-generation-mode` is `retract`, Miles' default and what synchronous runs keep; there every turn returns
+  the whole episode's routing so far.
+
+### Throughput
+
+- A synchronous step waits for its slowest episode. Most episodes take 1-6 minutes; 40-turn long-thinking
+  ones took about 20. Cap episodes with `episode_timeout_s` (default 0, off; the smoke configs use 3600) or use
+  `--async-rollout-gpus`.
+- Where the time goes depends on load. In 4-GPU smoke tests about 80% of episode wall time was sandbox
+  execution; in the 4-node production run, with 512 episodes sharing 16 engines, model calls take 48% and sandbox
+  commands 19%.
+- The first training step JIT-compiles the TileLang and Triton kernels for the linear-attention layers
+  (a few minutes); SGLang engines also compile at start-up and log health-check failures meanwhile.
+
+### Session server
+
+- `session_server: v2` (the default) is required by upstream's `--namespaced-radix-cache`, which fully async turns
+  on with in-place weight updates so prefix KV computed under old weights never serves a later call. v2 also needs
+  an image whose SGLang has prefill weight versions ([Images](/examples/tmax/beaker#images)). `v1` still works; pair it
+  with `--no-namespaced-radix-cache` in that mode.
+- v2 builds the same training samples as v1: one sample per episode, tool tokens loss-masked, the same observation
+  framing. Episodes that end with a full context lose their last, overflowing turn, or keep it cut at
+  `max_seq_len`; both versions do both.
+
+### Fully async
+
+- `--fully-async` rejects `--colocate` and `--rollout-function-path`, so the episode metrics are logged by a
+  `--custom-rollout-log-function-path` hook (`tmax_metrics.log_rollout_data`), which both modes call.
+- The abort hook matters only in synchronous mode: after over-sampling finishes a step, Miles waits for all
+  pending episodes. Each episode runs in its own process (`--custom-agent-function-mode subproc`, the
+  default), so `abort`, which runs in the rollout process, bumps a generation counter in a file scoped to
+  that process and removes its containers; every in-flight model call and bash command races against the
+  counter, and aborted episodes return within seconds. The episodes are not cancelled, because
+  `as_completed_async` would re-raise the cancellation. Limits shared across episodes (start and exec
+  concurrency, one pull per image) are `rollout_limits` file locks for the same reason.
+- With OPD the trainer is the bottleneck on a 2 + 2 split (a 455 s step, 241 s of it the teacher forward),
+  so staleness climbs one version per step and would reach `--max-weight-staleness` on the next. Give the
+  trainer more GPUs than the generator for async OPD.
+
+### On-policy distillation
+
+- Megatron mode (`--opd-type megatron`) keeps the teacher as a CPU weight backup of the student's model and
+  swaps it in for one forward pass per step, so teacher and student must share an architecture; the launcher
+  asserts this. It leaves the task reward and the sandbox loop untouched, while SGLang mode replaces the
+  reward function with OPD's own. With `--use-rollout-logprobs` the student term of the reverse-KL estimate
+  is the rollout log-prob, the behavior policy's: under fully async staleness a token keeps the OPD advantage it was
+  sampled with across the updates it trains in. Prime-RL instead evaluates the KL against the trainer's live
+  log-prob; the designs are compared in [OPD across frameworks](/deep-dive/opd-across-frameworks).
+- **The KL to the base model (`train/kl_loss`) spikes under pure OPD** (22,571 at step 3 and about 1e6 at step 4 of
+  the 9B run, below 6 from step 7 on): k3 is unclamped, and the few tokens the teacher rejects outright get OPD
+  advantages down to -36, which push their log-probs down by many nats. open-instruct's 9B OPD run logged the same
+  (`objective/kl2_avg` 10,911 at step 6). The dumped reference and rollout log-probs agree (0.007 per token), so it
+  is not a weight-swap bug.
+- `allenai/tmax-4b` and `hamishivi/Qwen3.5-4B` have identical architecture, vocabulary and merges;
+  `tmax-4b` only adds seven unused audio/TTS special tokens (ids 248070-248076). The same holds for
+  `allenai/tmax-2b` and `hamishivi/Qwen3.5-2B` (both tokenizers have 248,077 entries; tied embeddings). Like
+  `tmax-4b`, `tmax-2b` has no vision tower or MTP weights; neither matters to Megatron-mode OPD.
+- **Pure OPD** (`opd_pure`, open-instruct's `--opd_pure`, which all of its terminal OPD runs use) trains on the
+  OPD term alone. `generate.opd_pure_rewards`, a `--custom-reward-post-process-path`, hands GRPO a reward of 0 for
+  every sample, so its advantage is 0, and keeps the task reward as `raw_reward` (`rollout/raw_reward`).
+  `rollout/advantages` is then the mean OPD term, and `tmax_metrics` leaves out `rollout/trained/advantage_*`.
+  The launcher requires `filter_zero_std: false` with it, since every group carries signal.
+- **Teacher on SGLang servers** (`opd_teacher_mode: sglang`; `auto`, the default, picks it when the teacher's
+  architecture differs from the student's, as for `allenai/tmax-9b` into a 4B). Before submitting the job the launcher
+  starts `opd_teacher_gpus` SGLang servers of one GPU each (SGLang TP > 1 produces garbage for Qwen3.5), lists them in
+  `<output_dir>/<exp_name>/opd-teachers.json`, and waits up to 30 minutes for every one to answer, or the launch fails.
+  Each server is a detached Ray actor holding its GPU, placed on the last nodes in the order Miles' placement group
+  sorts nodes (by IP), round-robin: on several nodes those are the rollout nodes, so the placement group, created next
+  on the GPUs left, still gives training its whole nodes. The teacher GPUs come out of the rollout side's
+  (`prod_4node_gateway_opd_9b_to_4b.yaml`: 16 training + 14 rollout + 2 teacher GPUs). `generate.generate_with_teacher`
+  wraps Miles' agentic generate function: it sends every collected sample with a task reward to the least busy
+  teacher server (Miles' own teacher request, with that server as `--rm-url`) and stores the response tokens'
+  log-probs in `sample.teacher_log_probs`, which Miles trains on as the Megatron teacher's. (Not a reward function:
+  session server v2 returns samples with the agent's reward set, and Miles calls `--custom-rm-path` only for samples
+  without one, so Miles' SGLang-mode reward function never runs here.) The task reward stays the reward, so
+  `opd_pure`, additive OPD, the filters and the metrics work as in Megatron mode; Miles' documented SGLang-mode reward
+  function and post-process replace it with 0. A teacher request is retried after `opd_teacher_timeout_s` (1800) or an
+  error, and the third failure fails the rollout. Colocated (synchronous) training with an SGLang teacher is one node
+  only.
+- SGLang serves the tmax checkpoints, which have no vision tower or image-processor config, with `--language-only`
+  and the student's directory as `--tokenizer-path`: SGLang loads Qwen3.5's image processor from there, the processor
+  configs are identical across Qwen3.5 sizes, and the vocabulary is shared (the tmax tokenizers add seven unused audio
+  tokens; requests carry token ids). Its `--language-model-only` rejects Qwen3.5.
+- On the 16 trajectories of the first step of `01M5K694GXJ85TX6RZ9A014QTH` (Megatron teacher), `allenai/tmax-4b` served
+  by SGLang 0.5.21 on an L40S matched the Megatron teacher's log-probs to 0.0106 per trained token (median 0, p99
+  0.13), and both give a reverse KL of 0.1788 per token. `allenai/tmax-9b` gives 0.162 on the same trajectories.
+- The OPD term is dense: at `--opd-kl-coef 1.0` grad_norm is about 20x a GRPO-only step (4-6 vs 0.2-0.4)
+  and is clipped to 1.0, so the update is mostly distillation. Use 0.1-0.3 to keep the task reward in play.
+
+### Sandboxes and environment
+
+- Podman inside a Beaker task: `apt install podman` (4.9) works with open-instruct's `containers.conf`; a
+  `storage.conf` must set `runroot` and `graphroot`. docker-py consults the client's
+  `~/.docker/config.json` credential helper on pull and fails if it is broken; `tmax_sandbox` always sends
+  explicit (possibly empty) credentials so Podman uses its own login.
+- GPU containers cannot be nested inside a Beaker task: Podman there can neither mount a fresh procfs nor
+  create cgroups, and the `/proc` bind it falls back to belongs to another PID namespace, which makes
+  `cuInit` fail with CUDA error 304. Run the Miles image as the Beaker task itself and nest only the CPU
+  sandboxes. Current Miles images are CUDA 13 only (upstream retired the CUDA 12 images). On 570-series drivers
+  (Jupiter's and Ceres' H100s) they run through the image's CUDA forward-compatibility driver, which the entry script
+  loads ([Images](/examples/tmax/beaker#images)).
+- On 80 GB GPUs pass `--log-probs-backend fused`, as the prod configs do. The default backend upcasts the logits to
+  fp32: 13.85 GiB for one ~15k-token episode, which ran an H100 out of memory in the training step.
+- `openai_session_url` already appends `/v1`; agent functions pass its result to the OpenAI client as is.
+- Qwen3.5 `torch_dist` checkpoints converted before the head-sharded linear-attention layout (upstream #3610)
+  are rejected at load; re-convert them from HF into a new `--model-dir`.
+- On B300 with TP=1 and no optimizer offload, Qwen3.5-9B training uses ~58 GB allocated per GPU, and a
+  weight sync to the engines takes ~2.6 s.
+
+### Known gaps
+
+Open differences from open-instruct and the work on them are tracked in [ROADMAP.md](https://github.com/radixark/miles/blob/main/examples/tmax/ROADMAP.md); the
+[comparison](/deep-dive/open-instruct-comparison) describes each. The largest:
+
+- No DPPO in Miles: the port trains with PPO clip.
+- The first-turn prompt is not token-identical: SGLang's tool schema adds `"strict": false` and reorders the tool
+  definition's keys, about 17 tokens. Tool observations are framed differently too (two newlines, trimmed output,
+  several calls in one turn share one user block).
+- Podman comes from Ubuntu's apt (4.9) at job start; open-instruct's image builds 5.6.2 and crun 1.14.3.
+- Every agent process runs on the head node (`--pin-rollout-manager-to-head`); open-instruct's environment actors
+  run on every node. The sandboxes still spread: the head drives the other nodes' podman over TCP.
+- Group-granular dropping: one infra failure discards its whole group.
