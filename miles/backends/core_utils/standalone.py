@@ -169,6 +169,17 @@ def resolve_core_config(args, fields: dict, supplied=frozenset()) -> CoreConfig:
         needed = args.max_weight_staleness + steps - 1
     else:
         needed = steps * getattr(args, "update_weights_interval", 1) - 1
+    # agentic_tool_call caps each episode at args.max_seq_len (Megatron's flag, which the
+    # FSDP-style parser here lacks); an uncapped episode longer than the trainer's context
+    # would fail in training rather than end as a truncated episode.
+    max_seq_len = getattr(args, "max_seq_len", None)
+    if max_seq_len is None:
+        args.max_seq_len = core.max_sequence_length
+    elif max_seq_len > core.max_sequence_length:
+        raise InputError(
+            f"--max-seq-len {max_seq_len} exceeds core.max_sequence_length={core.max_sequence_length}: "
+            "the trainer could not train an episode of that length"
+        )
     if "max_policy_lag" not in fields:
         core = dataclasses.replace(core, max_policy_lag=needed)
     elif core.max_policy_lag < needed:
@@ -182,6 +193,14 @@ def resolve_core_config(args, fields: dict, supplied=frozenset()) -> CoreConfig:
 def load_args(*, extra_args_provider):
     def add_arguments(parser):
         parser = extra_args_provider(parser)
+        # agentic_tool_call registers --max-seq-len itself when it is the generate function.
+        if "--max-seq-len" not in parser._option_string_actions:
+            parser.add_argument(
+                "--max-seq-len",
+                type=int,
+                default=None,
+                help="Token cap of a multi-turn episode (agentic_tool_call); defaults to core.max_sequence_length.",
+            )
         parser.add_argument(
             "--olmo-core-config",
             default="{}",

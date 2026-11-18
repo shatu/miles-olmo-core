@@ -164,3 +164,14 @@ def test_only_open_instruct_runs_swap_in_the_managed_async_producer(loader):
         else "miles.backends.core_utils.rollout.async_rollout.ManagedFullyAsyncRolloutFn"
     )
     assert args.rollout_function_path == expected
+
+
+def test_episode_cap_defaults_to_the_trainer_context_and_cannot_exceed_it():
+    args = _args()
+    standalone.resolve_core_config(args, {"max_sequence_length": 32768})
+    assert args.max_seq_len == 32768
+    args = _args(max_seq_len=16384)
+    standalone.resolve_core_config(args, {"max_sequence_length": 32768})
+    assert args.max_seq_len == 16384
+    with pytest.raises(InputError, match="exceeds core.max_sequence_length=8192"):
+        standalone.resolve_core_config(_args(max_seq_len=16384), {})
