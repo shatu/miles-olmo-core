@@ -12,7 +12,7 @@ Three stacked branches on `allenai/miles-olmo-core` `main` at `22d2fb4`:
 | Branch | Contains |
 |---|---|
 | `shashank/upstream-backports` | Upstream Miles commits only, nothing else |
-| `shashank/olmo-standalone` | Running the OLMo-core trainer without open-instruct (planned) |
+| `shashank/olmo-standalone` | Running the OLMo-core trainer without open-instruct |
 | `shashank/tmax-olmo` | TMax: DPPO-TV loss, agent/sandbox code, launchers, this tracker |
 
 - `git log 22d2fb4..shashank/upstream-backports` lists only upstream Miles commits.
@@ -79,6 +79,47 @@ which partitions the prefix cache by rollout. The pinned SGLang supports
 `extra_key`. Pass `--no-namespaced-radix-cache` to keep the fork's previous
 caching.
 
+## Running the OLMo-core trainer without open-instruct
+
+Three commits on `shashank/olmo-standalone`:
+
+1. **`miles/backends/core_utils/standalone_config.py`:** a verbatim copy of
+   open-instruct's `CoreConfig` (`open_instruct/miles/configuration/config.py`
+   at `28c181666`), with its validation helpers inlined. The 83 fields, their
+   order, types, defaults and checks match the source.
+   `tests/fast/backends/core_utils/test_standalone_loader.py` pins the field
+   list, so resync both together when the OLMo team changes a field.
+2. **`miles/backends/core_utils/standalone.py`**, selected by
+   `integration.load_args` unless `MILES_OLMO_CORE_LOADER=open_instruct`.
+   - **Miles' own pieces:** the loop (`train.py`, or `train_async.py` with
+     `--fully-async`), data source, reward function, `FullyAsyncRolloutFn` and
+     default async buffer. Groups keep generating across weight updates, with
+     nothing cancelled at publication. A group is dropped only when its oldest
+     weight version is more than `--max-weight-staleness` behind.
+   - **Settings:** `--olmo-core-config` takes CoreConfig fields as JSON or
+     `@path`. Fields that only take effect through open-instruct's driver, data
+     source, reward adapter or inference recorder are rejected.
+   - **Checks:** it rejects what the trainer cannot run: TP/PP/CP > 1, critic,
+     offload, micro-batching, refresh and engine-drain publication.
+   - **Derived settings:** `max_policy_lag` is derived (staleness plus optimizer
+     steps per rollout, minus 1). `--qkv-format` follows `sequence_packing`
+     (`bshd` unless packing), because Miles' default `thd` does not fit.
+   - **Verified:** Miles' real `parse_args` with `--train-backend olmo_core`
+     works for both sync and fully-async runs without importing open-instruct.
+3. **`docker/olmo/Dockerfile` and `build_image.sh`:** open-instruct's pinned
+   binary base (Beaker `01M5ZYQZVF7DDJ1VR619KRSS42`), with OLMo-core
+   `903e57d`, olmo-sglang `069dc0a3`, SGLang `7b6993a3` and Megatron at the
+   open-instruct pins, plus this repository's Miles.
+   - **Build-time checks:** the olmo-sglang plugin loads on the bumped SGLang;
+     sglang-kernel is 0.4.7; `--enable-prefill-weight-versions` is registered;
+     open-instruct is absent.
+   - **Built locally:** `localhost/miles-olmo:a258dbbc56`; not uploaded yet.
+
+**Staleness units:** with the OLMo-core trainer, a weight version is a count of
+completed optimizer steps, so `--max-weight-staleness` is in optimizer steps. In
+the Megatron TMax runs it counted weight updates, one per rollout. TMax's
+staleness of 4 becomes 4 × (optimizer steps per rollout) here.
+
 ## TMax commits
 
 On `shashank/tmax-olmo`, after this tracker:
@@ -114,12 +155,16 @@ test venv. Under `-n 24` a few worker e2e and timing tests flake on either tree.
 
 ## Blocking any run
 
-- [ ] **Bump SGLang** from `b84bec57` to `7b6993a3` (our TMax pin; 9 commits;
-  `b84bec57` is its ancestor). Code ported from #3368 onward reads
-  `args.sglang_enable_prefill_weight_versions` for every sample, and that server
-  flag only exists from SGLang #44164 (`f312781649`). With the current pin,
-  rollouts fail with `AttributeError`. Then check that the olmo-sglang plugin
-  still loads on the newer SGLang.
+- [x] **Bump SGLang** from `b84bec57` to `7b6993a3` (our TMax pin; 9 commits;
+  `b84bec57` is its ancestor), in `docker/olmo/Dockerfile`. Code ported from
+  #3368 onward reads `args.sglang_enable_prefill_weight_versions` for every
+  sample, and that server flag only exists from SGLang #44164 (`f312781649`).
+  The image build confirms the olmo-sglang plugin still loads.
+- [ ] **Upload the OLMo runtime image** to Beaker
+  (`build_image.sh --upload`); it is built locally only.
+- [ ] **TMax launcher for the OLMo-core trainer:** OLMo MoE checkpoint,
+  `--olmo-core-config`, staleness in optimizer steps, episodes of at most
+  65,536 tokens, gateway sandboxes.
 - [x] **CPU unit tests** on the ported commits (see Test status).
 - [x] **Decided (2026-11-18): TMax stays under `examples/tmax`.** It keeps the
   same import paths, config strings and doc links as `shatu/miles`. The
@@ -140,17 +185,17 @@ We will need async. Each item below blocks fully-async TMax on this fork.
     `on_dequeue`). `async_rollout.py` and checkpoint code also overlap.
 - [ ] **Upstream rollout-worker event loops, #4082–#4087 (5 commits).** These
   overlap the fork's `miles/ray/rollout` changes.
-- [ ] **Keep Miles' `FullyAsyncRolloutFn`** for `olmo_core`
-  (`olmo-standalone`). Today `core_utils/integration.configure_rollout` swaps in
+- [x] **Keep Miles' `FullyAsyncRolloutFn`** for `olmo_core`
+  (`olmo-standalone`; the standalone loader's default). Before this, `core_utils/integration.configure_rollout` swaps in
   the OLMo team's managed producer. With open-instruct's driver, that producer
   cancels every in-flight group at each weight publication.
-- [ ] **Use Miles' default async buffer** (`olmo-standalone`). It drops a group
+- [x] **Use Miles' default async buffer** (`olmo-standalone`). It drops a group
   only when its oldest weight version is too old. open-instruct's
   `load_core_args` installs `HomogeneousPolicyDataBuffer`, which drops any
   group spanning two weight versions.
-- [ ] **Set the trainer's lag limit.** It raises rather than drops: set the
-  `olmo_core` `max_policy_lag` to at least `max_weight_staleness` plus optimizer
-  steps per rollout minus 1.
+- [x] **Set the trainer's lag limit.** It raises rather than drops. The
+  standalone loader derives `max_policy_lag` as `max_weight_staleness` plus
+  optimizer steps per rollout minus 1, and rejects a smaller explicit value.
 - [ ] **Decide how in-place weight updates are cached.**
   `core_utils/publication/policy_refresh.py` allows in-place pauses only with
   `disable_radix_cache=true` or the `olmo_policy_versioned_v1` plugin (one GPU
