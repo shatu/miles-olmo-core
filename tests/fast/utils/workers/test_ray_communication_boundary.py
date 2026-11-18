@@ -48,6 +48,8 @@ RAY_USING_MODULES = {
     "miles/utils/debug_utils/replay_reward_fn.py": "tooling: a standalone debugging script",
     "miles/utils/test_utils/mock_sglang_engine.py": "tooling: a test double that stands in for a ray-launched engine",
     "tools/convert_torch_dist_to_hf_ray.py": "tooling: a standalone conversion script that fans out over a ray cluster",
+    "examples/tmax/run_tmax_qwen3_5.py": "launcher closure: the TMax launcher places its OPD teacher server with a Ray node-affinity actor",
+    "examples/tmax/beaker/follow_ray_job.py": "launcher closure: the TMax Beaker entry follows its Ray job through the job submission client",
 }
 
 
