@@ -263,6 +263,26 @@
      "developer/versions",
      "developer/debug",
      {
+      "group": "TMax",
+      "pages": [
+       "examples/tmax",
+       "examples/tmax/beaker",
+       "tmax-olmo/TODO"
+      ]
+     },
+     {
+      "group": "Deep Dive",
+      "pages": [
+       "deep-dive/index",
+       "deep-dive/rl-step-walkthrough",
+       "deep-dive/metrics-and-debugging",
+       "deep-dive/async-and-off-policy",
+       "deep-dive/agentic-rollout-internals",
+       "deep-dive/open-instruct-comparison",
+       "deep-dive/opd-across-frameworks"
+      ]
+     },
+     {
       "group": "CI",
       "pages": [
        "ci/00-stage",
