@@ -63,6 +63,55 @@ commits in between, these 16 are ported, in upstream order:
 | #3972 | `2000d7a978` | Session: aiohttp proxy | |
 | #3973 | `ef8de80272` | Session: less repeated work | Base64 speedup applied in the fork's `decode_int32_buffer` |
 
+Fork tests that used APIs these commits changed were updated inside the
+commit that changed the API:
+
+- #3366: prepared-batch fake executor;
+- #3367: `WorkerType` in router-readiness tests;
+- #3368: `WeightVersionsPerCall.from_dict`/`to_dict`;
+- #3373: reservation-test producer fake.
+
+**Behavior change for miles-olmo-core's own async producers:** #3373 defaults
+`--namespaced-radix-cache` on for `--fully-async` runs with
+`--pause-generation-mode in_place`. That now includes the fork's managed and
+refresh producers. Their SGLang requests carry an `extra_key` per rollout,
+which partitions the prefix cache by rollout. The pinned SGLang supports
+`extra_key`. Pass `--no-namespaced-radix-cache` to keep the fork's previous
+caching.
+
+## TMax commits
+
+On `shashank/tmax-olmo`, after this tracker:
+
+- **Miles core, cherry-picked one-to-one with `-x`:**
+  - DPPO-TV policy loss (`aecf2f49`);
+  - Ray head lookup through the GCS (`ef3dcd48`);
+  - `MILES_SESSION_REQUEST_TIMEOUT_S` (`9fcfa58e`).
+- **Build:** the Docker image pins (`16429689`, `d0831a47`).
+- **Squashed:**
+  - the `examples/tmax` tree and its tests;
+  - the TMax and Deep Dive docs.
+
+  Both are squashed from `shashank/tmax-terminal-rl` (`60a0111841`) plus
+  `shashank/tmax-qwen35-moe` (`a51bd0a27b`), and carry `Ported-From` trailers.
+- **Ray boundary test:** the TMax example commit also lists the two TMax
+  modules that import `ray` in `tests/fast/utils/workers/test_ray_communication_boundary.py`.
+
+## Test status (CPU, `tests/fast`)
+
+Run with `/root/venvs/miles-olmo-core-test`: SGLang `b84bec57` plus Miles
+requirements, on local disk. Install with `UV_CACHE_DIR` on local disk and
+`SGLANG_BUILD_RUST_EXTS=none`. The suite was run on `shashank/tmax-olmo` and on
+unmodified `22d2fb4`.
+
+Failing on `shashank/tmax-olmo` but not on `22d2fb4`, in a serial rerun: only
+`tests/fast/maintenance/test_upstream_exclusions.py::test_manifest_covers_removed_files_but_not_itself`.
+It asserts that `examples/`, `docs/examples/` and `tests/fast/examples/` do not
+exist, and TMax lives there (see the open decision below).
+
+The remaining failures are the same on both trees: Megatron is absent from the
+test venv. Under `-n 24` a few worker e2e and timing tests flake on either tree.
+
 ## Blocking any run
 
 - [ ] **Bump SGLang** from `b84bec57` to `7b6993a3` (our TMax pin; 9 commits;
@@ -71,8 +120,11 @@ commits in between, these 16 are ported, in upstream order:
   flag only exists from SGLang #44164 (`f312781649`). With the current pin,
   rollouts fail with `AttributeError`. Then check that the olmo-sglang plugin
   still loads on the newer SGLang.
-- [ ] **Run the CPU unit tests** on the ported commits; none have run yet. The
-  test venv is `/root/venvs/miles-olmo-core-test`, on local disk.
+- [x] **CPU unit tests** on the ported commits (see Test status).
+- [ ] **Decide where TMax lives.** Either keep `examples/tmax`, which matches
+  `shatu/miles` paths but keeps the exclusion test red, or move it (for example
+  to `tmax/`, `docs/tmax/` and `tests/fast/tmax/`). Moving keeps the fork's suite
+  green and would be needed before proposing anything to allenai.
 
 ## Deferred: needed for async
 
