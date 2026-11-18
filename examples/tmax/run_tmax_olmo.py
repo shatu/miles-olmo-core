@@ -81,12 +81,14 @@ class OlmoScriptArgs(dense.ScriptArgs):
     rollout_max_response_len: int = 8192
     lr: float = 1e-6
     # SGLang engines (Olmo 3.5 hybrid): the measured B300 profile's radix-off, Triton-attention choices, with
-    # smaller pools; CUDA graphs off by default for quick starts.
+    # smaller pools; decode CUDA graphs off by default for quick starts.
     sglang_mem_fraction_static: float = 0.7
     sglang_attention_backend: str = "triton"
     sglang_max_running_requests: int = 64
     sglang_max_mamba_cache_size: int = 256
-    sglang_cuda_graphs: bool = False
+    # Decode CUDA graphs, as in the measured B300 preset (prefill graphs stay off): several times faster decoding,
+    # which long episodes need, for a slower engine start.
+    sglang_cuda_graph_decode: bool = False
     olmo_core_config: str = ""
     megatron_path: str = "/src/Megatron-LM"
 
@@ -232,8 +234,14 @@ def run_execute(args: OlmoScriptArgs) -> None:
         f"--sglang-max-running-requests {args.sglang_max_running_requests} "
         f"--sglang-max-mamba-cache-size {args.sglang_max_mamba_cache_size} "
     )
-    if not args.sglang_cuda_graphs:
-        sglang_args += "--sglang-cuda-graph-backend-decode disabled --sglang-cuda-graph-backend-prefill disabled "
+    sglang_args += "--sglang-cuda-graph-backend-prefill disabled "
+    if args.sglang_cuda_graph_decode:
+        sglang_args += (
+            "--sglang-cuda-graph-backend-decode full "
+            f"--sglang-cuda-graph-max-bs-decode {args.sglang_max_running_requests} "
+        )
+    else:
+        sglang_args += "--sglang-cuda-graph-backend-decode disabled "
 
     misc_args = (
         "--actor-num-nodes 1 "
