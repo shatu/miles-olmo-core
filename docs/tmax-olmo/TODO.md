@@ -107,7 +107,7 @@ unmodified `22d2fb4`.
 Failing on `shashank/tmax-olmo` but not on `22d2fb4`, in a serial rerun: only
 `tests/fast/maintenance/test_upstream_exclusions.py::test_manifest_covers_removed_files_but_not_itself`.
 It asserts that `examples/`, `docs/examples/` and `tests/fast/examples/` do not
-exist, and TMax lives there (see the open decision below).
+exist, and TMax lives there by decision (see below).
 
 The remaining failures are the same on both trees: Megatron is absent from the
 test venv. Under `-n 24` a few worker e2e and timing tests flake on either tree.
@@ -121,10 +121,11 @@ test venv. Under `-n 24` a few worker e2e and timing tests flake on either tree.
   rollouts fail with `AttributeError`. Then check that the olmo-sglang plugin
   still loads on the newer SGLang.
 - [x] **CPU unit tests** on the ported commits (see Test status).
-- [ ] **Decide where TMax lives.** Either keep `examples/tmax`, which matches
-  `shatu/miles` paths but keeps the exclusion test red, or move it (for example
-  to `tmax/`, `docs/tmax/` and `tests/fast/tmax/`). Moving keeps the fork's suite
-  green and would be needed before proposing anything to allenai.
+- [x] **Decided (2026-11-18): TMax stays under `examples/tmax`.** It keeps the
+  same import paths, config strings and doc links as `shatu/miles`. The
+  exclusion-manifest test therefore stays red in this fork, by decision. Moving
+  TMax would only be needed before proposing it to allenai/miles-olmo-core,
+  whose upstream filter excludes `examples/`.
 
 ## Deferred: needed for async
 
