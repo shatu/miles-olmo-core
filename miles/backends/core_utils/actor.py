@@ -900,6 +900,13 @@ class OLMoCoreTrainRayActor(TrainRayActor):
             return
         updater.close()
 
+    def dispose(self):
+        # Open Instruct's driver closes the weight transport before disposing the trainer; Miles' own
+        # loops dispose it directly, while the engines still serve. The weight-update communicator is
+        # collective with them, so destroying the default process group first can wait forever.
+        self.close_weight_transport()
+        super().dispose()
+
     def capture_evaluation_snapshot(self, rollout_id, target):
         target = Path(target)
         # All ranks make the same decision; a failed collective/export propagates.

@@ -15,3 +15,12 @@ def test_actor_close_delegates_transport_cleanup():
     instance.weight_updater = SimpleNamespace(close=Mock())
     instance.close_weight_transport()
     instance.weight_updater.close.assert_called_once_with()
+
+
+def test_actor_dispose_retires_the_weight_transport_before_its_process_groups(monkeypatch):
+    calls = []
+    instance = object.__new__(actor.OLMoCoreTrainRayActor)
+    instance.weight_updater = SimpleNamespace(close=lambda: calls.append("close_weight_transport"))
+    monkeypatch.setattr(actor.TrainRayActor, "dispose", lambda self: calls.append("destroy_process_groups"))
+    instance.dispose()
+    assert calls == ["close_weight_transport", "destroy_process_groups"]
