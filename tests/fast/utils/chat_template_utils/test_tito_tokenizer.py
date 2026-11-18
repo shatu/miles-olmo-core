@@ -1146,6 +1146,7 @@ class TestParserBinding:
             (TITOTokenizerType.QWENNEXT, "qwen3", "qwen25"),
             (TITOTokenizerType.GLM47, "glm45", "glm47"),
             (TITOTokenizerType.NEMOTRON3, "nemotron_3", "qwen3_coder"),
+            (TITOTokenizerType.OLMO35, "qwen3", "qwen3_coder"),
             (TITOTokenizerType.KIMI25, None, None),
             (TITOTokenizerType.KIMI26, "kimi_k2", "kimi_k2_raw_id"),
             (TITOTokenizerType.MINIMAX_M25, "minimax-append-think", "minimax-m2"),

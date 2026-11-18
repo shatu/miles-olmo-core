@@ -554,6 +554,25 @@ class GLM53TITOTokenizer(GLM47TITOTokenizer):
 # ---------------------------------------------------------------------------
 
 
+class Olmo35TITOTokenizer(Qwen3TITOTokenizer):
+    """Olmo 3.5 (OLMo-core hybrid MoE) checkpoints, rendered with their own template.
+
+    The native template keeps Olmo 3's ``<|im_start|>``/``<|im_end|>`` turns,
+    the ``environment`` role for tool results and reasoning in every assistant
+    turn, with Qwen 3.5's XML tool calls. A tool-calling assistant turn ends at
+    ``<|im_end|>`` (the stop token) and the template renders ``\n`` after it,
+    the boundary Qwen3TITOTokenizer restores. Other assistant turns end with the
+    eos token and no newline, so nothing is inserted after them.
+
+    No fixed template: a bundled Qwen template would change the system prompt,
+    tool observations and turn terminators the checkpoint was trained on.
+    """
+
+    tool_call_parser = "qwen3_coder"
+
+    FIXED_TEMPLATE = FixedTemplate(allowed_append_roles=frozenset({"tool", "user"}))
+
+
 class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
     """NVIDIA Nemotron 3 family: ``<|im_end|>\\n`` message boundaries.
 
@@ -998,6 +1017,7 @@ class TITOTokenizerType(StrEnum):
     DEEPSEEKV4 = "deepseekv4"
     DEEPSEEKV41 = "deepseekv41"
     INKLING = "inkling"
+    OLMO35 = "olmo35"
 
     @classmethod
     def get_tokenizer_class(cls, t: TITOTokenizerType) -> type[TITOTokenizer]:
@@ -1021,6 +1041,8 @@ class TITOTokenizerType(StrEnum):
                 return GLM53TITOTokenizer
             case cls.NEMOTRON3:
                 return Nemotron3TITOTokenizer
+            case cls.OLMO35:
+                return Olmo35TITOTokenizer
             case cls.KIMI25:
                 return Kimi25TITOTokenizer
             case cls.KIMI26:

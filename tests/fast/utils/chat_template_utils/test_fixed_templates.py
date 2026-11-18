@@ -46,6 +46,7 @@ _EXPECTED_FIXED_TEMPLATES = {
     TITOTokenizerType.DEEPSEEKV4: (None, {"drop_thinking": False}),
     TITOTokenizerType.DEEPSEEKV41: (None, {"drop_thinking": False}),
     TITOTokenizerType.INKLING: ("inkling_fixed.jinja", {}),
+    TITOTokenizerType.OLMO35: (None, {}),
 }
 
 
