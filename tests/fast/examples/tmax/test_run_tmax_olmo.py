@@ -19,6 +19,7 @@ def test_core_config_packs_to_the_context_and_drops_router_losses():
         "max_sequence_length": 16384,
         "expert_parallel_size": 2,
         "sequence_packing": True,
+        "attention_backend": "flash_4",
         "router_aux_loss_weight": 0.0,
         "router_z_loss_weight": 0.0,
         "packing_max_tokens": 16384,
