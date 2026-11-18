@@ -190,6 +190,31 @@ def resolve_core_config(args, fields: dict, supplied=frozenset()) -> CoreConfig:
     return core
 
 
+def _resume_manifest(root) -> dict:
+    # Imported here: the checkpoint module pulls in torch and OLMo-core, needed only to resume.
+    from miles.backends.core_utils import checkpoint
+
+    return checkpoint.resume_manifest(root)[1]
+
+
+def resolve_resume(args) -> None:
+    """--load as with Megatron: a directory without a committed checkpoint starts from --hf-checkpoint.
+
+    The trainer treats --load as "a committed checkpoint exists" (core-latest.json), which Open
+    Instruct checks before passing it. TMax passes its --save directory as --load on every attempt, so
+    the first attempt starts fresh and a retry resumes. A resume continues at the checkpoint's next
+    rollout unless --start-rollout-id is given.
+    """
+    if not getattr(args, "load", None):
+        return
+    if not (Path(args.load) / "core-latest.json").exists():
+        args.load = None
+        return
+    manifest = _resume_manifest(args.load)
+    if getattr(args, "start_rollout_id", None) is None:
+        args.start_rollout_id = manifest["clock"]["next_rollout_id"]
+
+
 def load_args(*, extra_args_provider):
     def add_arguments(parser):
         parser = extra_args_provider(parser)
@@ -210,6 +235,7 @@ def load_args(*, extra_args_provider):
 
     args = load_fsdp_args(extra_args_provider=add_arguments)
     args.olmo_core = resolve_core_config(args, read_core_config(args.olmo_core_config), _supplied_flags())
+    resolve_resume(args)
     args.olmo_core_loader = LOADER
     args.compress_ratios = None
     return args

@@ -175,3 +175,20 @@ def test_episode_cap_defaults_to_the_trainer_context_and_cannot_exceed_it():
     assert args.max_seq_len == 16384
     with pytest.raises(InputError, match="exceeds core.max_sequence_length=8192"):
         standalone.resolve_core_config(_args(max_seq_len=16384), {})
+
+
+def test_load_without_a_committed_checkpoint_starts_fresh(tmp_path):
+    args = SimpleNamespace(load=str(tmp_path), start_rollout_id=None)
+    standalone.resolve_resume(args)
+    assert args.load is None and args.start_rollout_id is None
+
+
+def test_load_with_a_committed_checkpoint_resumes_at_its_next_rollout(tmp_path, monkeypatch):
+    (tmp_path / "core-latest.json").write_text("{}")
+    monkeypatch.setattr(standalone, "_resume_manifest", lambda root: {"clock": {"next_rollout_id": 7}})
+    args = SimpleNamespace(load=str(tmp_path), start_rollout_id=None)
+    standalone.resolve_resume(args)
+    assert args.load == str(tmp_path) and args.start_rollout_id == 7
+    args = SimpleNamespace(load=str(tmp_path), start_rollout_id=3)
+    standalone.resolve_resume(args)
+    assert args.start_rollout_id == 3
