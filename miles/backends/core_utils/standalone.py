@@ -133,6 +133,12 @@ def resolve_core_config(args, fields: dict, supplied=frozenset()) -> CoreConfig:
         raise InputError(
             "The OLMo-core trainer packs its own batches: keep --micro-batch-size 1, no dynamic batch size"
         )
+    if core.sequence_packing and core.attention_backend == "torch":
+        # As Open Instruct's RunConfig: packed rows need masking between documents.
+        raise InputError(
+            'core.sequence_packing=true needs a packing-capable core.attention_backend: "torch" cannot mask '
+            "between packed documents (flash_4 on B300, flash_3 on H100, flash_2 on A100), or disable packing"
+        )
     layout = "thd" if core.sequence_packing else "bshd"
     if "--qkv-format" not in supplied:
         args.qkv_format = layout

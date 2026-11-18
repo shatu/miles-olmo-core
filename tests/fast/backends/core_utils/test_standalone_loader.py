@@ -113,6 +113,7 @@ def test_async_lag_adds_staleness_to_the_steps_within_a_rollout():
         ({"global_batch_size": 3}, {}, "multiple of the trainer world size 2"),
         ({"global_batch_size": 6}, {}, "complete optimizer batches"),
         ({"micro_batch_size": 2}, {}, "--micro-batch-size 1"),
+        ({}, {"sequence_packing": True}, "packing-capable core.attention_backend"),
     ],
 )
 def test_resolve_rejects_what_the_trainer_cannot_run(overrides, fields, message):
@@ -125,7 +126,7 @@ def test_qkv_layout_follows_sequence_packing_unless_chosen_explicitly():
     standalone.resolve_core_config(args, {})
     assert args.qkv_format == "bshd"
     args = _args(qkv_format="bshd")
-    standalone.resolve_core_config(args, {"sequence_packing": True})
+    standalone.resolve_core_config(args, {"sequence_packing": True, "attention_backend": "flash_4"})
     assert args.qkv_format == "thd"
     with pytest.raises(InputError, match="--qkv-format bshd"):
         standalone.resolve_core_config(_args(qkv_format="thd"), {}, {"--qkv-format"})
