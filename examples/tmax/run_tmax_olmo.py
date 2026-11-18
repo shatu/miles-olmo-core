@@ -24,6 +24,7 @@ Args (in addition to run_tmax_qwen3_5.py's; its Megatron-only flags are ignored)
   --asynchronous: train_async.py --fully-async, generation never pauses for training (default: off).
   --expert-parallel-size: OLMo-core expert parallelism; must divide train_gpus (default: 2).
   --sequence-packing: pack samples into --qkv-format thd rows of max_seq_len tokens (default: on).
+  --attention-backend: the trainer's attention, flash_4 on B300, flash_3 on H100, flash_2 on A100 (default: flash_4).
   --rollout-routing-replay: R3 (default: on).
   --olmo-core-config: extra CoreConfig fields as a JSON object, merged over this launcher's.
 
@@ -72,6 +73,9 @@ class OlmoScriptArgs(dense.ScriptArgs):
     asynchronous: bool = False
     expert_parallel_size: int = 2
     sequence_packing: bool = True
+    # OLMo-core trainer attention; packing needs a flash backend. Open Instruct's per-cluster choice: flash_4 on
+    # Holmes (B300), flash_3 on Jupiter (H100), flash_2 on Saturn (A100).
+    attention_backend: str = "flash_4"
     rollout_routing_replay: bool = True
     max_seq_len: int = 32768
     rollout_max_response_len: int = 8192
@@ -114,6 +118,7 @@ class OlmoScriptArgs(dense.ScriptArgs):
             "max_sequence_length": self.max_seq_len,
             "expert_parallel_size": self.expert_parallel_size,
             "sequence_packing": self.sequence_packing,
+            "attention_backend": self.attention_backend,
             # The OLMo team's RL recipes train without the MoE router's auxiliary losses.
             "router_aux_loss_weight": 0.0,
             "router_z_loss_weight": 0.0,
