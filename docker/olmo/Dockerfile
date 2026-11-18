@@ -52,6 +52,10 @@ RUN SGLANG_BUILD_RUST_EXTS=none UV_LINK_MODE=copy uv pip install --system --no-d
 # Native launchers that prepend the historical Megatron location still find it.
 RUN mkdir -p /src && ln -sT ${MILES_SOURCES}/megatron-lm /src/Megatron-LM
 
+# Job entry scripts pip-install small runtime clients (e.g. the TMax sandbox client) into the system Python,
+# which Ubuntu marks externally managed (PEP 668); this image is a single-purpose environment.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
 ENV PYTHONPATH=${MILES_SOURCES}/sglang/python:${MILES_SOURCES}/olmo-sglang/src:${MILES_SOURCES}/olmo-core/src:${MILES_SOURCES}/miles:${MILES_SOURCES}/megatron-lm:${MILES_SOURCES}/megatron-bridge/src
 WORKDIR ${MILES_SOURCES}/miles
 RUN python -m compileall -q ${MILES_SOURCES}/olmo-core/src/olmo_core ${MILES_SOURCES}/miles/miles
