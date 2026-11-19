@@ -40,6 +40,7 @@ def test_extra_core_fields_override_the_launcher_ones():
         ({"train_gpus": 4, "rollout_gpus": 2}, "exceed 4 GPUs"),
         ({"hf_snapshot_every": 20, "save_interval": 20}, "native checkpoints only"),
         ({"sglang_radix_cache": True, "asynchronous": True}, "sync-only"),
+        ({"sglang_radix_cache": True, "sglang_max_mamba_cache_size": 320}, "5 x sglang_max_running_requests"),
     ],
 )
 def test_layouts_the_launcher_cannot_place_are_rejected(kwargs, message):

@@ -1,9 +1,11 @@
 # smoke_olmo_tiny_sync_imgbfb2f1bf7a.yaml with SGLang prefix (radix) caching across turns, KDA state snapshotted
 # with extra_buffer, and decode CUDA graphs (now the launcher default). Each weight update flushes the cache (retract
 # pause). Watch: cached-token share in the engines' prefill logs, trainer/rollout log-prob difference (about 0.03
-# without the cache), R3 routing for cached tokens, memory and rollout time.
+# without the cache), R3 routing for cached tokens, memory and rollout time. 384 KDA state slots: more than 5 per
+# running request (64), about 5 GB per engine.
 exp_name: tmax_smoke_olmo_tiny_sync_radix
 sglang_radix_cache: true
+sglang_max_mamba_cache_size: 384
 model_name: olmo35-tiny-s-c-noag
 sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
 num_gpus_per_node: 4

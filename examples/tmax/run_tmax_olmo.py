@@ -93,7 +93,9 @@ class OlmoScriptArgs(dense.ScriptArgs):
     # Prefix (radix) caching across an episode's turns. Off by default, as in the B300 preset. KDA's recurrent state
     # cannot be split per token, so olmo-sglang snapshots it at prefix boundaries with SGLang's extra_buffer strategy.
     # Sync only: each weight update flushes the cache (retract pause). In-place async updates need the
-    # policy-versioned cache backend, which the trainer's publication checks require.
+    # policy-versioned cache backend, which the trainer's publication checks require. Each running request can hold
+    # up to 5 KDA state slots under extra_buffer, so the mamba pool must exceed 5 x sglang_max_running_requests
+    # (open-instruct's validated capacity rule).
     sglang_radix_cache: bool = False
     olmo_core_config: str = ""
     megatron_path: str = "/src/Megatron-LM"
@@ -109,6 +111,12 @@ class OlmoScriptArgs(dense.ScriptArgs):
         assert not (
             self.sglang_radix_cache and self.asynchronous
         ), "sglang_radix_cache is sync-only: in-place async weight updates need the policy-versioned cache backend"
+        assert (
+            not self.sglang_radix_cache or self.sglang_max_mamba_cache_size > 5 * self.sglang_max_running_requests
+        ), (
+            f"sglang_radix_cache needs sglang_max_mamba_cache_size > 5 x sglang_max_running_requests "
+            f"({self.sglang_max_mamba_cache_size} <= 5 x {self.sglang_max_running_requests})"
+        )
         assert (
             self.train_gpus + self.rollout_gpus <= self.num_gpus_per_node
         ), f"train_gpus {self.train_gpus} + rollout_gpus {self.rollout_gpus} exceed {self.num_gpus_per_node} GPUs"
