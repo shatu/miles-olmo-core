@@ -1,0 +1,43 @@
+# Resumes the 64K smoke (01M7QTQNZ46T64YJRHS373HGHB, 2 rollouts, saved at rollout 1) to 4 rollouts. Submit it into
+# that run's checkpoint directory, so --load finds its committed checkpoint:
+#   examples/tmax/beaker/submit.py examples/tmax/configs/smoke_olmo_tiny_sync_64k_resume.yaml \
+#     --exp-name tmax_smoke_olmo_tiny_sync_64k_20261118_171938
+# Expect: start at rollout 2 with 2 optimizer steps done, the resumed weights published to the engines before the
+# first rollout, the data source continuing at its saved position, and a clean exit after rollout 3.
+exp_name: tmax_smoke_olmo_tiny_sync_64k_resume
+sglang_cuda_graph_decode: true
+model_name: olmo35-tiny-s-c-noag
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_gpus_per_node: 4
+train_gpus: 2
+rollout_gpus: 2
+expert_parallel_size: 2
+num_prompts: 64
+rollout_batch_size: 8
+n_samples_per_prompt: 4
+num_rollout: 4
+max_seq_len: 65536
+rollout_max_response_len: 16384
+filter_zero_std: false
+save_interval: 1000
+episode_timeout_s: 7200
+data_dir: /weka/oe-adapt-default/shashankg/miles_tmax/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+
+beaker:
+  launcher: examples/tmax/run_tmax_olmo.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  min_runtime: 8h
+  retries: 0
+  gpus: 4
+  shared_memory: 256GiB
+  image: beaker:shashankg/miles-olmo-bfb2f1bf7a
+  weka: [nora-default, oe-adapt-default, olmo-3p5-post-checkpoints]
+  dockerhub_username: shashankg209
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 8
