@@ -126,6 +126,10 @@ The main commits on `shashank/olmo-standalone`:
    - The trainer actor closes the weight-update communicator before its
      `dispose`, as open-instruct's driver does. Miles' loops dispose the
      trainer while engines still serve, and without it the run hung on exit.
+   - Inference engines launch through `miles.backends.core_utils.serving`, which
+     registers olmo-sglang's KDA backend before SGLang resolves its arguments,
+     as open-instruct's serving entry does. Without it, SGLang refuses the
+     `extra_buffer` radix strategy (found locally before the radix smoke).
 5. **`olmo35` TITO family:** Qwen3's newline merge on the Olmo 3.5 template,
    with the `qwen3_coder` tool-call parser (see the TITO item below).
 
@@ -172,7 +176,8 @@ test venv. Under `-n 24` a few worker e2e and timing tests flake on either tree.
 ## GPU smokes
 
 Olmo 3.5 Tiny (`s-c-noag-s34521/hf_step63494` unless noted) on 4 B300s on
-`ai2/jupiter`: 2 trainer GPUs (EP 2), 2 SGLang engines, gateway sandboxes.
+`ai2/holmes`: 2 trainer GPUs (EP 2), 2 SGLang engines, gateway sandboxes on the
+jupiter128 podman fleet.
 Configs are in `examples/tmax/configs/smoke_olmo_tiny_*.yaml`. Each run's
 pinned commit is tagged locally as `smoke/olmo-tiny-<run>-<id>`; `git tag -l 'smoke/*'`
 lists them.
@@ -187,6 +192,8 @@ lists them.
 | `01M7PYKHG3` | fully async, staleness 2, 32K | 4 optimizer steps and save; hung in `dispose` as above | same (cancelled) |
 | `01M7QTQNZ4` | sync, 64K, decode CUDA graphs | 2 optimizer steps, save, clean exit (trainer `dispose` 2.7 s) | |
 | `01M7QTQWG0` | sync, 32K, H235 RL checkpoint (`B2048-Noff-LR6e6` export) | 3 optimizer steps, save, clean exit | |
+| `01M7S3Z21M` | sync, 64K, resumes `01M7QTQNZ4` to 4 rollouts | resumed at rollout 2, optimizer steps 3–4, clean exit | |
+| `01M7S70846` | sync, 32K, radix cache (`extra_buffer`) + decode CUDA graphs | 3 optimizer steps, save, clean exit | KDA serving hook (below) |
 
 What the two completed runs show:
 
@@ -216,6 +223,41 @@ What the two completed runs show:
     and science RL seems to make it answer directly instead of working in
     the terminal;
   - rollouts take 870–1,340 s without decode CUDA graphs.
+- **Resume (`01M7S3Z21M`):** submitted into the 64K run's directory
+  (`submit.py ... --exp-name tmax_smoke_olmo_tiny_sync_64k_20261118_171938
+  --name <new Beaker name>`):
+  - the standalone loader read `core-latest.json`;
+  - it started at rollout 2, with optimizer step 3 and behavior version 2;
+  - the first weight publication sent version 2, so the engines served the
+    resumed weights;
+  - the data source continued, with no task repeated from the first run's 16;
+  - W&B resumed the same run;
+  - log-prob difference 0.027–0.032, ESS 0.995–0.996.
+- **Radix cache (local checks, L40S):**
+  - Engines launched as `python -m sglang.launch_server` refuse
+    `--mamba-radix-cache-strategy extra_buffer` ("needs mamba state").
+    SGLang loads the external olmo-sglang package only after its radix
+    capability check. Open Instruct launches engines through its own serving
+    entry that registers the KDA backend first. The standalone loader now
+    does the same (`miles/backends/core_utils/serving.py`, via a
+    `transform_worker_specs` backend hook).
+  - Through that entry, the server builds a hybrid (attention + KDA state)
+    radix tree. Continuations computed from a cached prefix differ from
+    uncached ones by a mean |Δ log-prob| of 0.04–0.07 on real text. Uncached
+    prefill split into 256-token chunks differs by the same amount
+    (0.04–0.06), and uncached repeats are exact. So the cache adds no error
+    beyond prefill chunking.
+  - olmo-sglang's own repeat-prompt and refresh probes flip a greedy token on
+    their synthetic repeating prompt for this reason, while its base parity
+    probe passes.
+- **Radix cache on B300 (`01M7S70846`, 384 KDA state slots for 64 requests):**
+  - 92–95% of prefill tokens came from the cache; each weight update flushes it;
+  - log-prob difference 0.015–0.017 and KL 0.0006–0.0008, lower than the
+    cache-off runs (about 0.03 and 0.002–0.004); ESS 0.998–0.999;
+  - no R3 errors;
+  - the KDA state pool takes about 5.4 GB per engine;
+  - rollouts took 454, 148 and 106 s. Decode CUDA graphs were on too, so the
+    speedup is not the cache's alone.
 - **Sync and async 32K runs:**
   - the SFT checkpoint rarely solves tasks (mean reward 0.06 in one batch,
     otherwise 0);
