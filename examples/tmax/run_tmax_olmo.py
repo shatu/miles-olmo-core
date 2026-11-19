@@ -29,6 +29,11 @@ Args (in addition to run_tmax_qwen3_5.py's; its Megatron-only flags are ignored)
   --sglang-cuda-graph-decode: decode CUDA graphs on the SGLang engines (default: on).
   --sglang-radix-cache: prefix caching across turns, KDA state snapshotted with extra_buffer; sync only (default: off).
   --olmo-core-config: extra CoreConfig fields as a JSON object, merged over this launcher's.
+  --rollout-only: Miles' --debug-rollout-only: rollout_gpus engines serve the checkpoint and nothing trains, e.g. to
+      label task success (tools/label_success.py reads the traces); train_gpus is ignored (default: off).
+  --prompt-file: a prompt JSONL to run instead of the dataset's, e.g. a subset (default: the dataset's).
+  --skip-labeled: run only the prompts whose traces under trace_dir/exp_name hold fewer than n_samples_per_prompt
+      scored episodes, and derive num_rollout from them, so a preempted labeling job resumes where it stopped.
 
 =====================
 
@@ -39,7 +44,9 @@ On Beaker set ``launcher: examples/tmax/run_tmax_olmo.py`` and the OLMo-core ima
 """
 
 import json
+import math
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -104,6 +111,9 @@ class OlmoScriptArgs(dense.ScriptArgs):
     sglang_radix_cache: bool = False
     olmo_core_config: str = ""
     megatron_path: str = "/src/Megatron-LM"
+    rollout_only: bool = False
+    prompt_file: str = ""
+    skip_labeled: bool = False
 
     def __post_init__(self):
         super().__post_init__()
@@ -113,18 +123,23 @@ class OlmoScriptArgs(dense.ScriptArgs):
             self.train_gpus % self.expert_parallel_size == 0
         ), f"expert_parallel_size {self.expert_parallel_size} must divide train_gpus {self.train_gpus}"
         assert self.num_nodes == 1, "this launcher places trainer and engines on one node"
+        # A rollout-only run never updates weights, so its cache stays valid with async generation.
         assert not (
-            self.sglang_radix_cache and self.asynchronous
+            self.sglang_radix_cache and self.asynchronous and not self.rollout_only
         ), "sglang_radix_cache is sync-only: in-place async weight updates need the policy-versioned cache backend"
+        assert not self.skip_labeled or (
+            self.rollout_only and self.trace_dir
+        ), "skip_labeled resumes a rollout-only labeling run from its traces: set rollout_only and trace_dir"
         assert (
             not self.sglang_radix_cache or self.sglang_max_mamba_cache_size > 5 * self.sglang_max_running_requests
         ), (
             f"sglang_radix_cache needs sglang_max_mamba_cache_size > 5 x sglang_max_running_requests "
             f"({self.sglang_max_mamba_cache_size} <= 5 x {self.sglang_max_running_requests})"
         )
+        trainer_gpus = 0 if self.rollout_only else self.train_gpus
         assert (
-            self.train_gpus + self.rollout_gpus <= self.num_gpus_per_node
-        ), f"train_gpus {self.train_gpus} + rollout_gpus {self.rollout_gpus} exceed {self.num_gpus_per_node} GPUs"
+            trainer_gpus + self.rollout_gpus <= self.num_gpus_per_node
+        ), f"train_gpus {trainer_gpus} + rollout_gpus {self.rollout_gpus} exceed {self.num_gpus_per_node} GPUs"
 
     def recipe_for(self, model_name: str):
         raise NotImplementedError("Olmo checkpoints are HF paths in _OLMO_MODELS, not Megatron recipes")
@@ -136,6 +151,12 @@ class OlmoScriptArgs(dense.ScriptArgs):
     @property
     def fully_async(self) -> bool:
         return self.asynchronous
+
+    @property
+    def prompt_data(self) -> str:
+        if self.skip_labeled:
+            return f"{self.trace_run_dir}/unlabeled_prompts.jsonl"
+        return self.prompt_file or super().prompt_data
 
     def core_config(self) -> dict:
         config = {
@@ -164,8 +185,42 @@ def prepare(args: OlmoScriptArgs):
             f"tar -xzf {args.dataset_dir}/task-data.tar.gz -C {args.task_data_dir}.tmp && "
             f"mv {args.task_data_dir}.tmp {args.task_data_dir}"
         )
-    dense._write_prompt_data(args)
+    if not args.prompt_file:
+        dense._write_prompt_data(args)
     assert Path(args.hf_checkpoint, "config.json").exists(), f"checkpoint not mounted: {args.hf_checkpoint}"
+
+
+def _scored_episodes(trace_run_dir: str) -> Counter:
+    """Episodes per task that the task's tests scored (reward not None), from the run's traces."""
+    scored = Counter()
+    for path in Path(trace_run_dir).glob("traces-*.jsonl"):
+        with open(path) as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # a line cut off by preemption
+                if record.get("reward") is not None:
+                    scored[record["task_id"]] += 1
+    return scored
+
+
+def _write_unlabeled_prompts(args: OlmoScriptArgs) -> int:
+    """Write the prompts still short of n_samples_per_prompt scored episodes to args.prompt_data; return how many."""
+    scored = _scored_episodes(args.trace_run_dir)
+    source = args.prompt_file or dense.ScriptArgs.prompt_data.fget(args)
+    Path(args.prompt_data).parent.mkdir(parents=True, exist_ok=True)
+    total = remaining = 0
+    with open(source) as f, open(args.prompt_data, "w") as out:
+        for line in f:
+            total += 1
+            if scored[json.loads(line)["metadata"]["task_id"]] < args.n_samples_per_prompt:
+                out.write(line)
+                remaining += 1
+    print(
+        f"skip_labeled: {total - remaining} of {total} prompts already have {args.n_samples_per_prompt} scored episodes"
+    )
+    return remaining
 
 
 @app.command()
@@ -175,6 +230,12 @@ def execute(args: OlmoScriptArgs):
 
 
 def run_execute(args: OlmoScriptArgs) -> None:
+    if args.skip_labeled:
+        remaining = _write_unlabeled_prompts(args)
+        if remaining == 0:
+            print("skip_labeled: every prompt is labeled; nothing to run")
+            return
+        args.num_rollout = math.ceil(remaining / args.rollout_batch_size)
     U = args.create_backend()
     assert (
         args.sandbox_backend != "gateway" or args.sandbox_gateway_url
@@ -287,6 +348,11 @@ def run_execute(args: OlmoScriptArgs) -> None:
         )
         if args.async_max_concurrent_samples:
             misc_args += f"--async-max-concurrent-samples {args.async_max_concurrent_samples} "
+    if args.rollout_only:
+        misc_args += "--debug-rollout-only "
+        if args.fully_async and args.sglang_radix_cache:
+            # The weights never change, so episodes from every rollout step may share cached prefixes.
+            misc_args += "--no-namespaced-radix-cache "
 
     if args.dump_training_data:
         assert args.trace_dir, "dump_training_data writes next to the traces: set trace_dir"

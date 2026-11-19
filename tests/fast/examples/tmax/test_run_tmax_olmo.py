@@ -67,3 +67,31 @@ def test_every_olmo_config_sets_only_launcher_fields():
             os.environ.clear()
             os.environ.update(saved)
         assert argv == ["run_tmax_olmo.py", "execute"]
+
+
+def test_skip_labeled_keeps_only_tasks_short_of_their_scored_episodes(tmp_path):
+    prompts = tmp_path / "prompts.jsonl"
+    prompts.write_text("".join(json.dumps({"prompt": [], "metadata": {"task_id": t}}) + "\n" for t in "abcd"))
+    run_dir = tmp_path / "traces" / "run"
+    run_dir.mkdir(parents=True)
+    episodes = [("a", 1.0), ("a", 0.0), ("b", 0.0), ("b", None), ("c", 1.0), ("c", 1.0), ("c", 0.0)]
+    (run_dir / "traces-host.jsonl").write_text(
+        "".join(json.dumps({"task_id": t, "reward": r}) + "\n" for t, r in episodes) + '{"task_id": "d", "rew'
+    )
+    args = launcher.OlmoScriptArgs(
+        rollout_only=True,
+        skip_labeled=True,
+        prompt_file=str(prompts),
+        trace_dir=str(tmp_path / "traces"),
+        exp_name="run",
+        n_samples_per_prompt=2,
+    )
+    # a and c are labeled; b has one scored episode (the other lost its sandbox); d's only line was cut off.
+    assert launcher._write_unlabeled_prompts(args) == 2
+    remaining = [json.loads(line)["metadata"]["task_id"] for line in open(args.prompt_data)]
+    assert remaining == ["b", "d"] and args.prompt_data == str(run_dir / "unlabeled_prompts.jsonl")
+
+
+def test_skip_labeled_needs_a_rollout_only_run_with_traces():
+    with pytest.raises(AssertionError, match="skip_labeled"):
+        launcher.OlmoScriptArgs(skip_labeled=True, trace_dir="/traces")
