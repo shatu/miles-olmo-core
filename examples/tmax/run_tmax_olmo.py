@@ -26,6 +26,8 @@ Args (in addition to run_tmax_qwen3_5.py's; its Megatron-only flags are ignored)
   --sequence-packing: pack samples into --qkv-format thd rows of max_seq_len tokens (default: on).
   --attention-backend: the trainer's attention, flash_4 on B300, flash_3 on H100, flash_2 on A100 (default: flash_4).
   --rollout-routing-replay: R3 (default: on).
+  --sglang-cuda-graph-decode: decode CUDA graphs on the SGLang engines (default: on).
+  --sglang-radix-cache: prefix caching across turns, KDA state snapshotted with extra_buffer; sync only (default: off).
   --olmo-core-config: extra CoreConfig fields as a JSON object, merged over this launcher's.
 
 =====================
@@ -80,15 +82,19 @@ class OlmoScriptArgs(dense.ScriptArgs):
     max_seq_len: int = 32768
     rollout_max_response_len: int = 8192
     lr: float = 1e-6
-    # SGLang engines (Olmo 3.5 hybrid): the measured B300 profile's radix-off, Triton-attention choices, with
-    # smaller pools; decode CUDA graphs off by default for quick starts.
+    # SGLang engines (Olmo 3.5 hybrid): the measured B300 profile's Triton-attention choices, with smaller pools.
     sglang_mem_fraction_static: float = 0.7
     sglang_attention_backend: str = "triton"
     sglang_max_running_requests: int = 64
     sglang_max_mamba_cache_size: int = 256
-    # Decode CUDA graphs, as in the measured B300 preset (prefill graphs stay off): several times faster decoding,
-    # which long episodes need, for a slower engine start.
-    sglang_cuda_graph_decode: bool = False
+    # Decode CUDA graphs, as in the measured B300 preset (prefill graphs stay off): about twice the decode speed in
+    # the 64K smoke (01M7QTQNZ4), for about 110 s more engine start.
+    sglang_cuda_graph_decode: bool = True
+    # Prefix (radix) caching across an episode's turns. Off by default, as in the B300 preset. KDA's recurrent state
+    # cannot be split per token, so olmo-sglang snapshots it at prefix boundaries with SGLang's extra_buffer strategy.
+    # Sync only: each weight update flushes the cache (retract pause). In-place async updates need the
+    # policy-versioned cache backend, which the trainer's publication checks require.
+    sglang_radix_cache: bool = False
     olmo_core_config: str = ""
     megatron_path: str = "/src/Megatron-LM"
 
@@ -100,6 +106,9 @@ class OlmoScriptArgs(dense.ScriptArgs):
             self.train_gpus % self.expert_parallel_size == 0
         ), f"expert_parallel_size {self.expert_parallel_size} must divide train_gpus {self.train_gpus}"
         assert self.num_nodes == 1, "this launcher places trainer and engines on one node"
+        assert not (
+            self.sglang_radix_cache and self.asynchronous
+        ), "sglang_radix_cache is sync-only: in-place async weight updates need the policy-versioned cache backend"
         assert (
             self.train_gpus + self.rollout_gpus <= self.num_gpus_per_node
         ), f"train_gpus {self.train_gpus} + rollout_gpus {self.rollout_gpus} exceed {self.num_gpus_per_node} GPUs"
@@ -230,10 +239,13 @@ def run_execute(args: OlmoScriptArgs) -> None:
         "--sglang-reasoning-parser qwen3 "
         "--sglang-tool-call-parser qwen3_coder "
         f"--sglang-attention-backend {args.sglang_attention_backend} "
-        "--sglang-disable-radix-cache "
         f"--sglang-max-running-requests {args.sglang_max_running_requests} "
         f"--sglang-max-mamba-cache-size {args.sglang_max_mamba_cache_size} "
     )
+    if args.sglang_radix_cache:
+        sglang_args += "--sglang-mamba-radix-cache-strategy extra_buffer "
+    else:
+        sglang_args += "--sglang-disable-radix-cache "
     sglang_args += "--sglang-cuda-graph-backend-prefill disabled "
     if args.sglang_cuda_graph_decode:
         sglang_args += (
