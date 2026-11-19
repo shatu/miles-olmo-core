@@ -1,0 +1,42 @@
+# smoke_olmo_tiny_sync_radix.yaml (passed as 01M7S70846) on the h250-b2e Tiny SFT, with 8 prompts x 4 samples per
+# rollout: does this checkpoint call the terminal tools and earn nonzero TMax reward, where s-c-noag and the H235 RL
+# export scored 0? Watch reward, episode end reasons (no_tool_call / submitted / context_full), tool calls per
+# episode and the trainer/rollout log-prob difference.
+exp_name: tmax_smoke_olmo_tiny_h250b2e_sync_radix
+sglang_radix_cache: true
+sglang_max_mamba_cache_size: 384
+model_name: olmo35-tiny-h250-b2e
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_gpus_per_node: 4
+train_gpus: 2
+rollout_gpus: 2
+expert_parallel_size: 2
+num_prompts: 64
+rollout_batch_size: 8
+n_samples_per_prompt: 4
+num_rollout: 3
+max_seq_len: 32768
+rollout_max_response_len: 8192
+filter_zero_std: false
+save_interval: 1000
+episode_timeout_s: 3600
+data_dir: /weka/oe-adapt-default/shashankg/miles_tmax/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true
+
+beaker:
+  launcher: examples/tmax/run_tmax_olmo.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  min_runtime: 8h
+  retries: 0
+  gpus: 4
+  shared_memory: 256GiB
+  image: beaker:shashankg/miles-olmo-bfb2f1bf7a
+  weka: [nora-default, oe-adapt-default, olmo-3p5-post-checkpoints]
+  dockerhub_username: shashankg209
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 8

@@ -60,8 +60,13 @@ _OLMO_MODELS: dict[str, str] = {
     "olmo35-tiny-h235-rl100": (
         "/weka/olmo-3p5-post-checkpoints/robertb/miles/h235-continue-204800-20261117/B2048-Noff-LR6e6/export-hf"
     ),
+    # A Tiny SFT from the TPU post-training runs (olmo35-sft-h250-b2e-c12r-ota-b2-s0, step 7893): the same
+    # architecture, EOS ids and chat template (sha256 f43922cd...) as olmo35-tiny-s-c-noag.
+    "olmo35-tiny-h250-b2e": (
+        "/weka/olmo-3p5-post-checkpoints/pradeepd/tpu-posttrain/hf/olmo35-sft-h250-b2e-c12r-ota-b2-s0-step7893"
+    ),
 }
-_OLMO_MODEL_NAMES = Literal["olmo35-tiny-s-c-noag", "olmo35-tiny-h235-rl100"]
+_OLMO_MODEL_NAMES = Literal["olmo35-tiny-s-c-noag", "olmo35-tiny-h235-rl100", "olmo35-tiny-h250-b2e"]
 
 app = typer.Typer()
 
