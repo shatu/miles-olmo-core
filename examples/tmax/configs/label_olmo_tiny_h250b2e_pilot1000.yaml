@@ -1,0 +1,51 @@
+# Success labels for the h250-b2e Tiny SFT on a 1,000-task pilot of TMax-15k, 16 episodes per task, to see which
+# tasks give Olmo Tiny a learning signal before labeling more (curriculum). The pilot is stratified by the pooled
+# Qwen TMax success rate (rollout_partitions/terminal_v1_since_jun2_tmax15k/task_success_stats.csv, >= 20 rollouts,
+# tasks Qwen never solved left out): 400 at >= 0.7, 300 at 0.5-0.7, 200 at 0.1-0.5, 100 below 0.1, built by
+# tools/sample_prompts_by_difficulty.py --seed 0 (strata in miles_prompts_olmo_pilot1000.jsonl.strata.csv).
+#
+# Rollout-only (no trainer; 4 SGLang engines), fully async so 16 tasks x 16 episodes stay in flight, radix cache on
+# (the weights never change), TMax's training budget: 64K tokens per episode, 16K per turn, 64 tool calls, 2 h.
+# Every finished episode is appended to the traces; each attempt (preemption, retry) runs only the tasks still short of
+# 16 scored episodes. Labels: tools/label_success.py <trace_dir>/<exp_name> --strata <strata csv>.
+exp_name: tmax_label_olmo_tiny_h250b2e_pilot1000
+model_name: olmo35-tiny-h250-b2e
+rollout_only: true
+skip_labeled: true
+prompt_file: /weka/oe-adapt-default/shashankg/miles_tmax/datasets/tmax-15k-open-instruct/miles_prompts_olmo_pilot1000.jsonl
+asynchronous: true
+sglang_radix_cache: true
+sglang_max_running_requests: 64
+sglang_max_mamba_cache_size: 384
+rollout_routing_replay: false                 # nothing trains on the routing
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_gpus_per_node: 4
+train_gpus: 2                                 # ignored: rollout_only serves on all rollout_gpus
+rollout_gpus: 4
+expert_parallel_size: 2
+rollout_batch_size: 16
+n_samples_per_prompt: 16
+max_seq_len: 65536
+rollout_max_response_len: 16384
+episode_timeout_s: 7200
+filter_zero_std: false
+save_interval: 1000
+data_dir: /weka/oe-adapt-default/shashankg/miles_tmax/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+
+beaker:
+  launcher: examples/tmax/run_tmax_olmo.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  min_runtime: 8h
+  retries: 10
+  gpus: 4
+  shared_memory: 256GiB
+  image: beaker:shashankg/miles-olmo-bfb2f1bf7a
+  weka: [nora-default, oe-adapt-default, olmo-3p5-post-checkpoints]
+  dockerhub_username: shashankg209
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 32
