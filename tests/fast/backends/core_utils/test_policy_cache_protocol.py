@@ -79,6 +79,7 @@ def test_actor_resumes_only_after_verified_version(monkeypatch, observed):
     worker = actor.OLMoCoreTrainRayActor.__new__(actor.OLMoCoreTrainRayActor)
     worker.args = SimpleNamespace(
         fully_async=False,
+        debug_rollout_only=False,
         pause_generation_mode="in_place",
         sglang_disable_radix_cache=False,
         sglang_radix_cache_backend=cache_protocol.BACKEND,

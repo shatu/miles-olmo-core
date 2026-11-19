@@ -63,6 +63,14 @@ class OLMoCoreTrainRayActor(TrainRayActor):
         indep_dp_info=None,
         indep_dp_store_addr=None,
     ):
+        if args.debug_rollout_only:
+            # Rollout-only runs (e.g. labeling task success) serve the HF checkpoint unchanged. As in the Megatron
+            # actor, the trainer builds nothing: no train module, optimizer, checkpoint restore or weight transport.
+            super()._init_common(args, role, with_ref=False, with_opd_teacher=False)
+            # The rollout executor still splits each batch over the trainer's data-parallel ranks.
+            self.train_parallel_config = {"dp_size": dist.get_world_size()}
+            self.weight_updater = None
+            return 0
         policy_refresh.validate_pause_mode(args)
         if role != "actor" or with_opd_teacher or recv_ckpt_src_rank is not None:
             raise ValueError("Core backend supports the policy actor without trainer-cell recovery")
@@ -293,6 +301,9 @@ class OLMoCoreTrainRayActor(TrainRayActor):
     def train(self, rollout_id, rollout_data_ref, external_data=None, *, witness_info=None, attempt=0):
         if attempt or witness_info is not None or external_data is not None:
             raise ValueError("Trainer retry, witnesses, and external critic data are not supported")
+        if self.args.debug_rollout_only:
+            self._heartbeat.bump()
+            return TrainStepOutput(outcome=cast(TrainStepOutcome, TrainStepOutcome.NORMAL))
         preparation_started = time.perf_counter()
         rollout, store = miles_data.get_rollout_data(self.args, rollout_data_ref)
         fetched_at = time.perf_counter()
@@ -709,13 +720,20 @@ class OLMoCoreTrainRayActor(TrainRayActor):
             raise ValueError("Non-finite policy loss")
 
     def save_model(self, rollout_id, force_sync=False):
+        if self.args.debug_rollout_only:
+            return
         checkpoint.save(self, rollout_id)
 
     def finalize_checkpoint(self, rollout_id):
+        if self.args.debug_rollout_only:
+            return
         self._agree(lambda: checkpoint.finalize(self, rollout_id))
 
     @publication.diagnose_update
     def update_weights(self, info):
+        # The engines serve the HF checkpoint for the whole of a rollout-only run.
+        if self.args.debug_rollout_only:
+            return None
         if os.environ.get("OI_MILES_PUBLICATION_DIAGNOSTICS") == "1":
             device = torch.cuda.current_device()
             publication.trace(
