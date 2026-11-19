@@ -86,11 +86,17 @@ async def finalize_checkpoint(actor, rollout_id: int) -> None:
     await actor.finalize_checkpoint(rollout_id)
 
 
+def transform_worker_specs(args, specs):
+    # Open Instruct's driver launches its workers itself, with its own serving entry.
+    return load_function("miles.backends.core_utils.serving.configure_specs")(args, specs)
+
+
 _HOOKS = BackendHooks(
     configure_rollout=configure_rollout,
     diagnostic_writer=diagnostic_writer,
     shutdown_rollout=shutdown_rollout,
     finalize_checkpoint=finalize_checkpoint,
+    transform_worker_specs=transform_worker_specs,
 )
 
 

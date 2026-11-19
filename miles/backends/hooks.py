@@ -37,6 +37,8 @@ class BackendHooks:
     shutdown_rollout: Callable[[Any], None] = _shutdown_rollout
     # Awaited after both training and rollout state have been saved.
     finalize_checkpoint: Callable[[Any, int], Awaitable[None]] = _finalize_checkpoint
+    # Applied to the worker specs before the worker manager launches them; native backends launch them as built.
+    transform_worker_specs: Callable[[Any, Any], Any] | None = None
 
 
 _DEFAULT_HOOKS = BackendHooks()

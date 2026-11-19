@@ -3,6 +3,7 @@ from functools import partial
 
 from ray.actor import ActorHandle
 
+from miles.backends.hooks import get_backend_hooks
 from miles.ray.wiring import launch_worker_manager, shutdown_worker_manager
 from miles.utils import object_store
 from miles.utils.async_utils import Disposer
@@ -19,7 +20,10 @@ def init_orchestration_script(args: Namespace, *, disposer: Disposer) -> ActorHa
     maybe_start_periodic_pyspy_dump()
     disposer.add(finish_tracking)
     init_tracking(args)
-    worker_manager = launch_worker_manager(args)
+    transform = get_backend_hooks(getattr(args, "train_backend", None)).transform_worker_specs
+    # Native backends launch the specs as built, through the same single call.
+    launch_options = {} if transform is None else {"transform_specs": partial(transform, args)}
+    worker_manager = launch_worker_manager(args, **launch_options)
     disposer.add(partial(shutdown_worker_manager, worker_manager))
     object_store.init_instance(args, contribute_segment=False)
     return worker_manager

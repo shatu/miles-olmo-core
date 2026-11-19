@@ -153,3 +153,26 @@ async def test_finalization_waits_for_acknowledgement_and_propagates_failure():
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+class _Spec(SimpleNamespace):
+    def model_copy(self, update):
+        return _Spec(**{**vars(self), **update})
+
+
+def test_core_engines_register_kda_before_sglang_resolves_arguments():
+    specs = [
+        _Spec(name="trainer-0", launch_command=lambda context: "trainer"),
+        _Spec(name="inference-engine-0", launch_command=lambda context: "python -u -m sglang.launch_server --port 1"),
+    ]
+    trainer, engine = get_backend_hooks("olmo_core").transform_worker_specs(SimpleNamespace(), specs)
+    assert trainer is specs[0]
+    assert engine.launch_command(None) == "python -u -m miles.backends.core_utils.serving --port 1"
+    assert get_backend_hooks("megatron").transform_worker_specs is None
+
+
+def test_core_serving_hook_rejects_an_unexpected_engine_module():
+    spec = _Spec(name="inference-engine-0", launch_command=lambda context: "python -m miles.router.router")
+    (engine,) = get_backend_hooks("olmo_core").transform_worker_specs(SimpleNamespace(), [spec])
+    with pytest.raises(ValueError, match="Expected a SGLang module launch"):
+        engine.launch_command(None)
