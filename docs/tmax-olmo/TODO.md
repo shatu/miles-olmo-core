@@ -194,6 +194,7 @@ lists them.
 | `01M7QTQWG0` | sync, 32K, H235 RL checkpoint (`B2048-Noff-LR6e6` export) | 3 optimizer steps, save, clean exit | |
 | `01M7S3Z21M` | sync, 64K, resumes `01M7QTQNZ4` to 4 rollouts | resumed at rollout 2, optimizer steps 3–4, clean exit | |
 | `01M7S70846` | sync, 32K, radix cache (`extra_buffer`) + decode CUDA graphs | 3 optimizer steps, save, clean exit | KDA serving hook (below) |
+| `01M7TNGCDT` | sync, 32K, radix + graphs, h250-b2e SFT, 8 prompts x 4 | 3 optimizer steps, save, clean exit; all 96 episodes score 0 | |
 
 What the two completed runs show:
 
@@ -258,6 +259,20 @@ What the two completed runs show:
   - the KDA state pool takes about 5.4 GB per engine;
   - rollouts took 454, 148 and 106 s. Decode CUDA graphs were on too, so the
     speedup is not the cache's alone.
+- **h250-b2e SFT (`01M7TNGCDT`):**
+  - it works as an agent: about 36 tool calls per episode, 26 of 96 episodes
+    submit;
+  - every episode scores 0. Submissions claim success without doing the work
+    (e.g. a summary printed after failed commands, an empty `[]` output file);
+  - the grader is not at fault: the async smoke scored a submitted episode 1.0;
+  - 42 episodes hit the 32K context or the 8,192-token turn cap;
+  - 97% of prefill came from the cache; log-prob difference 0.018–0.022;
+  - its tokenizer has no single-token `<think>`/`</think>`; ids 100256/100266
+    are `<|extra_id_0|>`/`<|extra_id_1|>`. The pipeline hard-codes neither.
+  - Local check (L40S, 6 tasks x 2 samples, 12 calls max, commands run in the
+    task images with podman): 97% of turns carry a `bash` call that SGLang
+    parsed, with no raw tool text and reasoning always split out. s-c-noag
+    gets 86%, and 10 of its 12 episodes end with no tool call.
 - **Sync and async 32K runs:**
   - the SFT checkpoint rarely solves tasks (mean reward 0.06 in one batch,
     otherwise 0);
