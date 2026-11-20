@@ -1,0 +1,55 @@
+# Signs of life for TMax RL on Olmo 3.5 Tiny h250-b2e: a curriculum that starts from tasks the checkpoint already
+# solves. The labeling pilot (label_olmo_tiny_h250b2e_pilot1000.yaml; rollout_partitions/olmo35_tiny_h250b2e_pilot1000)
+# found 67 of 1,000 tasks solved at least once in ~16 tries, at 11.8% success on that pool (pass@1 0.84% overall).
+#
+# miles_prompts_olmo_h250b2e_curriculum.jsonl (tools/build_curriculum_prompts.py --n-new 800 --seed 0), in order:
+#   steps 1-9: the 67 solved tasks only (two shuffled passes, topped up to whole batches);
+#   steps 10-75: 4 solved tasks (cycled) + 12 new tasks per batch. The new tasks are the 800 shortest task prompts with
+#   a pooled Qwen success rate >= 0.3 (>= 20 rollouts), outside the pilot. On the pilot, the shortest 10% of prompts
+#   were solved 16% of the time vs 6% overall, while the Qwen rate barely predicted Olmo's success.
+# Watch rollout/raw_reward against 11.8% on steps 1-9 (all solved tasks) and the share of new tasks with a success.
+#
+# Synchronous GRPO with DPPO-TV at the TMax recipe's lr 1e-6, radix cache and decode CUDA graphs (validated by the
+# smokes), 4 trainer GPUs (EP 4) + 4 SGLang engines, 16 tasks x 16 samples per step. TMax's budget: 64K tokens per
+# episode, 16K per turn, 64 tool calls; a 30 min episode timeout bounds each step (pilot episodes: p99 16 min, every
+# success under 12 min). Checkpoints every 10 steps; preemptions resume from the last one.
+exp_name: tmax_rl_olmo_tiny_h250b2e_curriculum
+model_name: olmo35-tiny-h250-b2e
+prompt_file: /weka/oe-adapt-default/shashankg/miles_tmax/datasets/tmax-15k-open-instruct/miles_prompts_olmo_h250b2e_curriculum.jsonl
+rollout_shuffle: false
+sglang_radix_cache: true
+sglang_max_running_requests: 64
+sglang_max_mamba_cache_size: 384
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_gpus_per_node: 8
+train_gpus: 4
+rollout_gpus: 4
+expert_parallel_size: 4
+rollout_batch_size: 16
+n_samples_per_prompt: 16
+num_rollout: 75
+max_seq_len: 65536
+rollout_max_response_len: 16384
+episode_timeout_s: 1800
+lr: 1.0e-6
+filter_zero_std: false
+save_interval: 10
+data_dir: /weka/oe-adapt-default/shashankg/miles_tmax/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+
+beaker:
+  launcher: examples/tmax/run_tmax_olmo.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  min_runtime: 8h
+  retries: 10
+  gpus: 8
+  shared_memory: 256GiB
+  image: beaker:shashankg/miles-olmo-bfb2f1bf7a
+  weka: [nora-default, oe-adapt-default, olmo-3p5-post-checkpoints]
+  dockerhub_username: shashankg209
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 32
