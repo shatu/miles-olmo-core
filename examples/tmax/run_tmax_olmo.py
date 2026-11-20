@@ -32,6 +32,8 @@ Args (in addition to run_tmax_qwen3_5.py's; its Megatron-only flags are ignored)
   --rollout-only: Miles' --debug-rollout-only: rollout_gpus engines serve the checkpoint and nothing trains, e.g. to
       label task success (tools/label_success.py reads the traces); train_gpus is ignored (default: off).
   --prompt-file: a prompt JSONL to run instead of the dataset's, e.g. a subset (default: the dataset's).
+  --rollout-shuffle / --no-rollout-shuffle: shuffle the prompts each epoch; off keeps prompt_file's order, e.g. for a
+      curriculum built by tools/build_curriculum_prompts.py (default: on).
   --skip-labeled: run only the prompts whose traces under trace_dir/exp_name hold fewer than n_samples_per_prompt
       scored episodes, and derive num_rollout from them, so a preempted labeling job resumes where it stopped.
 
@@ -113,6 +115,7 @@ class OlmoScriptArgs(dense.ScriptArgs):
     megatron_path: str = "/src/Megatron-LM"
     rollout_only: bool = False
     prompt_file: str = ""
+    rollout_shuffle: bool = True
     skip_labeled: bool = False
 
     def __post_init__(self):
@@ -261,7 +264,7 @@ def run_execute(args: OlmoScriptArgs) -> None:
         f"--prompt-data {args.prompt_data} "
         "--input-key prompt "
         "--metadata-key metadata "
-        "--rollout-shuffle "
+        f"{'--rollout-shuffle ' if args.rollout_shuffle else ''}"
         f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
