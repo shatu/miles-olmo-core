@@ -1,0 +1,47 @@
+# rl_olmo_tiny_h250b2e_curriculum_async.yaml (01M7W3ES0T) with the radix cache on, on branch shashank/olmo-async-radix:
+# upstream Miles' namespaced cache partitions it per rollout call (a sample reuses only prefixes cached under the call it
+# started in), the OLMo-core guard accepts that, and the engines report prompt KV versions (prompt KV lag metrics).
+# Compare with the async run without the cache: rollout throughput, prefix reuse, trainer/rollout log-prob difference,
+# ESS, prompt KV lag and reward.
+exp_name: tmax_rl_olmo_tiny_h250b2e_curriculum_async_radix
+model_name: olmo35-tiny-h250-b2e
+prompt_file: /weka/oe-adapt-default/shashankg/miles_tmax/datasets/tmax-15k-open-instruct/miles_prompts_olmo_h250b2e_curriculum.jsonl
+rollout_shuffle: false
+asynchronous: true
+max_weight_staleness: 4
+sglang_radix_cache: true                      # partitioned per rollout call (upstream namespaced cache)
+sglang_max_running_requests: 64
+sglang_max_mamba_cache_size: 384
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_gpus_per_node: 8
+train_gpus: 4
+rollout_gpus: 4
+expert_parallel_size: 4
+rollout_batch_size: 16
+n_samples_per_prompt: 16
+num_rollout: 75
+max_seq_len: 65536
+rollout_max_response_len: 16384
+episode_timeout_s: 1800
+lr: 1.0e-6
+filter_zero_std: false
+save_interval: 10
+data_dir: /weka/oe-adapt-default/shashankg/miles_tmax/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+
+beaker:
+  launcher: examples/tmax/run_tmax_olmo.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  min_runtime: 8h
+  retries: 10
+  gpus: 8
+  shared_memory: 256GiB
+  image: beaker:shashankg/miles-olmo-bfb2f1bf7a
+  weka: [nora-default, oe-adapt-default, olmo-3p5-post-checkpoints]
+  dockerhub_username: shashankg209
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 32
