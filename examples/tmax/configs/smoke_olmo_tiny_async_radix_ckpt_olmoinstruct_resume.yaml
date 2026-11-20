@@ -1,0 +1,45 @@
+# Resumes smoke_olmo_tiny_async_radix_ckpt_olmoinstruct.yaml's run (01M7XGNHPK) from its step-3 checkpoint to 5 rollouts,
+# in ai2/olmo-instruct: submit.py <this config> --exp-name tmax_smoke_olmo_tiny_async_radix_ckpt_olmoinstruct_20261120_221904
+# --name <new Beaker name>. Expect: start at rollout 3 (step 4) with the committed weights published, then a clean exit.
+exp_name: tmax_smoke_olmo_tiny_async_radix_ckpt_olmoinstruct_resume
+model_name: olmo35-tiny-h250-b2e
+prompt_file: /weka/oe-adapt-default/shashankg/miles_tmax/datasets/tmax-15k-open-instruct/miles_prompts_olmo_h250b2e_solvable67.jsonl
+asynchronous: true
+max_weight_staleness: 4
+sglang_radix_cache: true
+sglang_max_running_requests: 64
+sglang_max_mamba_cache_size: 384
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_gpus_per_node: 4
+train_gpus: 2
+rollout_gpus: 2
+expert_parallel_size: 2
+rollout_batch_size: 4
+n_samples_per_prompt: 4
+num_rollout: 5
+max_seq_len: 32768
+rollout_max_response_len: 8192
+episode_timeout_s: 1800
+filter_zero_std: false
+save_interval: 2
+data_dir: /weka/oe-adapt-default/shashankg/miles_tmax/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+
+beaker:
+  launcher: examples/tmax/run_tmax_olmo.py
+  cluster: ai2/holmes
+  workspace: ai2/olmo-instruct
+  budget: ai2/oe-other                        # ai2/olmo-instruct is in the ai2/oe-scaling group, whose budget this is
+  priority: urgent
+  min_runtime: 2h
+  retries: 0
+  gpus: 4
+  shared_memory: 256GiB
+  image: beaker:shashankg/miles-olmo-bfb2f1bf7a
+  weka: [nora-default, oe-adapt-default, olmo-3p5-post-checkpoints]
+  dockerhub_username: shashankg209
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 8
+  env:
+    MILES_SESSION_REQUEST_TIMEOUT_S: 600
