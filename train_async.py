@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 
+from miles.backends.hooks import get_backend_hooks
 from miles.ray.placement_group import (
     create_rollout_components,
     create_training_models,
@@ -104,6 +105,9 @@ async def train(args, *, disposer: Disposer):
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
             await rollout_executor.save(rollout_id)
+            # As train.py's save: the OLMo-core backend commits its checkpoint (complete marker, core-latest.json)
+            # only here, so without it an async run's checkpoints stayed pending and a retry started from scratch.
+            await get_backend_hooks(args.train_backend).finalize_checkpoint(actor_model, rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 

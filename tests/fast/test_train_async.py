@@ -199,6 +199,30 @@ class TestPipelinedGeneration:
         assert components.actor_model.trained == [0, 1, 2]
 
 
+class TestCheckpointCommit:
+    async def test_each_save_is_committed_by_the_backend_hook(self, monkeypatch: pytest.MonkeyPatch):
+        """As in train.py, the backend finalizes a checkpoint after the trainer and rollout state are saved."""
+        events: list[str] = []
+        args = _make_args(fully_async=True, num_rollout=2, save_interval=1, train_backend="olmo_core")
+        components = _install_driver_fakes(monkeypatch, args, events)
+
+        async def save_rollout_state(rollout_id: int) -> None:
+            events.append(f"rollout_save:{rollout_id}")
+
+        async def finalize(actor: Any, rollout_id: int) -> None:
+            events.append(f"finalize:{rollout_id}")
+
+        components.rollout_executor.save = save_rollout_state
+        monkeypatch.setattr(
+            train_async_driver, "get_backend_hooks", lambda backend: SimpleNamespace(finalize_checkpoint=finalize)
+        )
+        await with_disposer(train_async_driver.train, args)
+
+        for rollout_id in (0, 1):
+            order = [events.index(f"{event}:{rollout_id}") for event in ("actor_save", "rollout_save", "finalize")]
+            assert order == sorted(order)
+
+
 class TestCriticValuesHandoff:
     async def test_async_critic_outputs_reach_the_actor_and_are_released_after_training(
         self, monkeypatch: pytest.MonkeyPatch
