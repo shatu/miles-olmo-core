@@ -74,9 +74,11 @@ def test_skip_labeled_keeps_only_tasks_short_of_their_scored_episodes(tmp_path):
     prompts.write_text("".join(json.dumps({"prompt": [], "metadata": {"task_id": t}}) + "\n" for t in "abcd"))
     run_dir = tmp_path / "traces" / "run"
     run_dir.mkdir(parents=True)
-    episodes = [("a", 1.0), ("a", 0.0), ("b", 0.0), ("b", None), ("c", 1.0), ("c", 1.0), ("c", 0.0)]
+    episodes = [("a", 1.0, "submitted"), ("a", 0.0, "max_steps"), ("b", 0.0, "length"), ("b", None, "sandbox_lost")]
+    episodes += [("c", 1.0, "submitted"), ("c", 0.0, "no_tool_call"), ("d", 0.0, "start_failed")]
     (run_dir / "traces-host.jsonl").write_text(
-        "".join(json.dumps({"task_id": t, "reward": r}) + "\n" for t, r in episodes) + '{"task_id": "d", "rew'
+        "".join(json.dumps({"task_id": t, "reward": r, "metrics": {"end_reason": e}}) + "\n" for t, r, e in episodes)
+        + '{"task_id": "d", "rew'
     )
     args = launcher.OlmoScriptArgs(
         rollout_only=True,
@@ -86,7 +88,8 @@ def test_skip_labeled_keeps_only_tasks_short_of_their_scored_episodes(tmp_path):
         exp_name="run",
         n_samples_per_prompt=2,
     )
-    # a and c are labeled; b has one scored episode (the other lost its sandbox); d's only line was cut off.
+    # a and c are labeled; b has one scored episode (the other lost its sandbox); d's sandbox never started and its
+    # other line was cut off.
     assert launcher._write_unlabeled_prompts(args) == 2
     remaining = [json.loads(line)["metadata"]["task_id"] for line in open(args.prompt_data)]
     assert remaining == ["b", "d"] and args.prompt_data == str(run_dir / "unlabeled_prompts.jsonl")

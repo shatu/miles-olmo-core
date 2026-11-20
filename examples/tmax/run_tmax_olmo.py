@@ -191,7 +191,8 @@ def prepare(args: OlmoScriptArgs):
 
 
 def _scored_episodes(trace_run_dir: str) -> Counter:
-    """Episodes per task that the task's tests scored (reward not None), from the run's traces."""
+    """Episodes per task that the task's tests scored, from the run's traces. A sandbox that never started is
+    scored 0 for training (start_failed), but says nothing about the policy, so it does not count."""
     scored = Counter()
     for path in Path(trace_run_dir).glob("traces-*.jsonl"):
         with open(path) as f:
@@ -200,7 +201,10 @@ def _scored_episodes(trace_run_dir: str) -> Counter:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue  # a line cut off by preemption
-                if record.get("reward") is not None:
+                if (
+                    record.get("reward") is not None
+                    and (record.get("metrics") or {}).get("end_reason") != "start_failed"
+                ):
                     scored[record["task_id"]] += 1
     return scored
 

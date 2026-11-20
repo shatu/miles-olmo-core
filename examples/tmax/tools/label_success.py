@@ -2,7 +2,8 @@
 
 Reads ``traces-*.jsonl`` under a run's trace directory (trace_dir/exp_name) and writes one row per task:
 
-- ``n``: episodes the task's tests scored (reward not None; aborted and lost-sandbox episodes are skipped);
+- ``n``: episodes the task's tests scored. Skipped: aborted and fleet-lost episodes (reward None) and episodes whose
+  sandbox never started (``start_failed``: scored 0 for training, but not an outcome of the policy);
 - ``successes``: scored episodes with reward >= --success-threshold (TMax rewards are 0 or 1);
 - ``success_rate`` and the unbiased ``pass@k`` estimate 1 - C(n - c, k) / C(n, k) for each requested k <= n;
 - ``ends``: end-reason counts; ``mean_tool_calls`` per scored episode.
@@ -45,7 +46,7 @@ def main() -> None:
                 except json.JSONDecodeError:
                     continue  # a line cut off by preemption
                 metrics = record.get("metrics") or {}
-                if record.get("reward") is None:
+                if record.get("reward") is None or metrics.get("end_reason") == "start_failed":
                     unscored[metrics.get("end_reason", "unknown")] += 1
                     continue
                 task = tasks[record["task_id"]]
