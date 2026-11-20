@@ -27,7 +27,8 @@ Args (in addition to run_tmax_qwen3_5.py's; its Megatron-only flags are ignored)
   --attention-backend: the trainer's attention, flash_4 on B300, flash_3 on H100, flash_2 on A100 (default: flash_4).
   --rollout-routing-replay: R3 (default: on).
   --sglang-cuda-graph-decode: decode CUDA graphs on the SGLang engines (default: on).
-  --sglang-radix-cache: prefix caching across turns, KDA state snapshotted with extra_buffer; sync only (default: off).
+  --sglang-radix-cache: prefix caching across turns, KDA state snapshotted with extra_buffer; async runs partition it
+      per rollout call (upstream's namespaced cache) (default: off).
   --olmo-core-config: extra CoreConfig fields as a JSON object, merged over this launcher's.
   --rollout-only: Miles' --debug-rollout-only: rollout_gpus engines serve the checkpoint and nothing trains, e.g. to
       label task success (tools/label_success.py reads the traces); train_gpus is ignored (default: off).
@@ -106,8 +107,9 @@ class OlmoScriptArgs(dense.ScriptArgs):
     sglang_cuda_graph_decode: bool = True
     # Prefix (radix) caching across an episode's turns. Off by default, as in the B300 preset. KDA's recurrent state
     # cannot be split per token, so olmo-sglang snapshots it at prefix boundaries with SGLang's extra_buffer strategy.
-    # Sync only: each weight update flushes the cache (retract pause). In-place async updates need the
-    # policy-versioned cache backend, which the trainer's publication checks require. Each running request can hold
+    # Sync runs flush it at each weight update (retract pause). Async runs keep it across in-place updates, partitioned
+    # by upstream's namespaced cache (one partition per rollout call, on by default with in-place updates); the
+    # engines then report the prompt KV versions they serve. Each running request can hold
     # up to 5 KDA state slots under extra_buffer, so the mamba pool must exceed 5 x sglang_max_running_requests
     # (open-instruct's validated capacity rule).
     sglang_radix_cache: bool = False
@@ -126,10 +128,6 @@ class OlmoScriptArgs(dense.ScriptArgs):
             self.train_gpus % self.expert_parallel_size == 0
         ), f"expert_parallel_size {self.expert_parallel_size} must divide train_gpus {self.train_gpus}"
         assert self.num_nodes == 1, "this launcher places trainer and engines on one node"
-        # A rollout-only run never updates weights, so its cache stays valid with async generation.
-        assert not (
-            self.sglang_radix_cache and self.asynchronous and not self.rollout_only
-        ), "sglang_radix_cache is sync-only: in-place async weight updates need the policy-versioned cache backend"
         assert not self.skip_labeled or (
             self.rollout_only and self.trace_dir
         ), "skip_labeled resumes a rollout-only labeling run from its traces: set rollout_only and trace_dir"
@@ -325,6 +323,10 @@ def run_execute(args: OlmoScriptArgs) -> None:
     )
     if args.sglang_radix_cache:
         sglang_args += "--sglang-mamba-radix-cache-strategy extra_buffer "
+        if args.fully_async and not args.rollout_only:
+            # In-place updates keep the cache: upstream's namespaced cache (on by default here) bounds prompt KV
+            # staleness to the rollout call a sample started in, and the engines report the KV versions it serves.
+            sglang_args += "--sglang-enable-prefill-weight-versions "
     else:
         sglang_args += "--sglang-disable-radix-cache "
     sglang_args += "--sglang-cuda-graph-backend-prefill disabled "

@@ -31,6 +31,12 @@ def validate_pause_mode(args):
 
 def validate_engine_cache_settings(args):
     """Check the same resolved override precedence used to launch policy engines."""
+    if getattr(args, "namespaced_radix_cache", False):
+        # Upstream Miles' partitioned cache (#3372/#3373): a sample reuses only prefixes cached under the rollout call
+        # it started in, so a shared prompt's staleness is bounded, as is an in-flight sample's own; with
+        # --sglang-enable-prefill-weight-versions the engines report each prompt's KV versions. Olmo KDA state is
+        # cached in the same partitioned tree, and an in-place reload keeps it exactly.
+        return
     default = getattr(args, "sglang_disable_radix_cache", False)
     backend = getattr(args, "sglang_radix_cache_backend", None)
     if getattr(args, "sglang_config", None) is None:

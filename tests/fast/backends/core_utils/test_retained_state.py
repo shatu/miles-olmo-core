@@ -208,3 +208,18 @@ def test_retract_allows_policy_cache_override(tmp_path):
         )
     ]
     policy_refresh.validate_pause_mode(config_args(tmp_path, models, pause_generation_mode="retract"))
+
+
+def test_in_place_publication_accepts_upstreams_namespaced_radix_cache():
+    # Upstream's partitioned cache bounds prompt KV staleness to the rollout call a sample started in.
+    args = SimpleNamespace(
+        pause_generation_mode="in_place",
+        colocate=False,
+        sglang_disable_radix_cache=False,
+        sglang_radix_cache_backend=None,
+        sglang_config=None,
+        namespaced_radix_cache=True,
+    )
+    policy_refresh.validate_pause_mode(args)
+    with pytest.raises(ValueError, match="requires --sglang-disable-radix-cache"):
+        policy_refresh.validate_pause_mode(SimpleNamespace(**(vars(args) | {"namespaced_radix_cache": False})))
