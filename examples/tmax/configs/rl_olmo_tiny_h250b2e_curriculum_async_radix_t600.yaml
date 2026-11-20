@@ -1,7 +1,7 @@
 # rl_olmo_tiny_h250b2e_curriculum_async_radix.yaml with the session-request timeout at 600 s, as the Qwen3.5-35B-A3B
 # prod runs with routing replay: collecting a session's samples took longer than the 120 s default for ~37% of
-# sessions in the async runs, whose groups were then dropped as aborted. Resumes 01M7WFMFCV from its step-10 checkpoint
-# (submit.py --exp-name tmax_rl_olmo_tiny_h250b2e_curriculum_async_radix_20261120_124151).
+# sessions in the async runs (01M7WFMDKA, 01M7WFMFCV), whose groups were then dropped as aborted. A fresh run: those
+# runs' checkpoints never committed (train_async.py did not finalize them, fixed since), so there is nothing to resume.
 exp_name: tmax_rl_olmo_tiny_h250b2e_curriculum_async_radix
 model_name: olmo35-tiny-h250-b2e
 prompt_file: /weka/oe-adapt-default/shashankg/miles_tmax/datasets/tmax-15k-open-instruct/miles_prompts_olmo_h250b2e_curriculum.jsonl
