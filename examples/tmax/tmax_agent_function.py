@@ -60,7 +60,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, BadRequestError
 from tmax_sandbox import (
     SandboxBase,
     SandboxInfraError,
@@ -257,16 +257,26 @@ async def _loop(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox, reques
             episode.end_reason = "context_full"
             return
         t0 = time.monotonic()
-        completion = await _race_abort(
-            episode,
-            policy.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                tools=[BASH_TOOL],
-                **({"max_tokens": max_tokens} if max_tokens is not None else {}),
-                extra_body=request_kwargs,
-            ),
-        )
+        try:
+            completion = await _race_abort(
+                episode,
+                policy.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    tools=[BASH_TOOL],
+                    **({"max_tokens": max_tokens} if max_tokens is not None else {}),
+                    extra_body=request_kwargs,
+                ),
+            )
+        except BadRequestError as error:
+            if not _exceeds_context(error):
+                raise
+            # The turn budget counts the previous turn's tokens, not the observation appended since, so the prompt
+            # plus max_tokens can pass the engine's context (65,536 for Olmo 3.5, which max_seq_len equals). Out of
+            # room, as when the previous turn already filled max_seq_len: ending the episode scored keeps its group,
+            # where raising left it without a reward and the missing-reward filter dropped all of its samples.
+            episode.end_reason = "context_full"
+            return
         episode.gen_times.append(time.monotonic() - t0)
         episode.turns += 1
         if completion.usage is not None:
@@ -296,6 +306,11 @@ async def _loop(episode: _Episode, policy: AsyncOpenAI, box: TmaxSandbox, reques
             if done:
                 return
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": observation})
+
+
+def _exceeds_context(error: BadRequestError) -> bool:
+    """SGLang's 400 for a prompt plus max_tokens past the serving context length."""
+    return "maximum context length" in str(error)
 
 
 def _turn_budget(episode: _Episode, per_turn_cap: int | None) -> int | None:
