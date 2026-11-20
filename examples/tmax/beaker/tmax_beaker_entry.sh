@@ -261,6 +261,25 @@ if keep > 0 and tracker.exists():
         if old.name != protected:
             print(f"pruning old checkpoint {old}", flush=True)
             shutil.rmtree(old, ignore_errors=True)
+# The OLMo-core trainer's layout (run_tmax_olmo.py): core/rollout_<id> directories, committed by a complete.json marker,
+# and core-latest.json naming the one a resume loads. Only committed checkpoints count and are pruned; one still
+# being written (no complete.json) and the one core-latest.json names are never touched.
+core_latest = ckpt_dir / "core-latest.json"
+if keep > 0 and core_latest.exists():
+    import json
+    try:
+        protected = f"rollout_{int(json.loads(core_latest.read_text())['rollout_id']):07d}"
+    except (ValueError, KeyError, TypeError):
+        protected = None  # being rewritten: prune on the next pass
+    if protected:
+        committed = sorted(
+            (d for d in (ckpt_dir / "core").glob("rollout_*") if re.fullmatch(r"rollout_\d+", d.name) and (d / "complete.json").exists()),
+            key=lambda d: int(d.name[8:]),
+        )
+        for old in committed[:-keep]:
+            if old.name != protected:
+                print(f"pruning old checkpoint {old}", flush=True)
+                shutil.rmtree(old, ignore_errors=True)
 # HF snapshots hf/step_<rollout_id> hold the weights after rollout_id + 1 steps. Keep those after a multiple of
 # hf_every steps, and the newest finished one; a snapshot still being written (no .complete marker) is never touched.
 if hf_every > 0 and (ckpt_dir / "hf").is_dir():
