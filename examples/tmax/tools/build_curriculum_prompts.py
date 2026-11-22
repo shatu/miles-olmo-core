@@ -16,6 +16,11 @@ prompt length predicted solvability better than the Qwen rate (AUROC 0.72 vs 0.5
         --stats task_success_stats.csv --exclude labels.csv --n-new 800 --out curriculum.jsonl
 
 ``<out>.csv`` lists each position's task, its part (warm / seed / new), prompt length and prior.
+
+``--extend CURRICULUM.jsonl`` continues an existing curriculum (and its ``.csv``) instead: the output starts with that
+file's prompts unchanged, in order, then appends mixed batches of the next ``--n-new`` shortest candidates not already in
+it. A run that trained on the existing file resumes from its checkpoint at the same prompt offset (``--exp-name``), so
+it carries on into the appended tasks.
 """
 
 import argparse
@@ -38,6 +43,9 @@ def main() -> None:
     parser.add_argument("--seed-per-batch", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", required=True)
+    parser.add_argument(
+        "--extend", help="existing curriculum JSONL (with its .csv) to keep as the prefix and append to"
+    )
     args = parser.parse_args()
 
     prompts = {}
@@ -66,18 +74,29 @@ def main() -> None:
     def length(task):
         return len(json.loads(prompts[task])["prompt"][-1]["content"])
 
+    prefix_lines, prefix = [], []
+    if args.extend:
+        with open(args.extend) as f:
+            prefix_lines = f.readlines()
+        with open(f"{args.extend}.csv") as f:
+            prefix = [(row["task_id"], row["part"]) for row in csv.DictReader(f)]
+        if [json.loads(line)["metadata"]["task_id"] for line in prefix_lines] != [t for t, _ in prefix]:
+            raise SystemExit(f"{args.extend} and its .csv list different tasks")
+        excluded |= {t for t, _ in prefix}
+
     candidates = [t for t in prompts if t not in excluded and prior.get(t, -1) >= args.min_prior]
     new = sorted(candidates, key=lambda t: (length(t), t))[: args.n_new]
     print(f"new tasks: the {len(new)} shortest of {len(candidates)} candidates (prompt chars <= {length(new[-1])})")
 
     rng = random.Random(args.seed)
     order = []
-    while len(order) < args.warm_passes * len(seeds) or len(order) % args.batch:
+    while not args.extend and (len(order) < args.warm_passes * len(seeds) or len(order) % args.batch):
         block = seeds[:]
         rng.shuffle(block)
         order += [(t, "warm") for t in block]
     # Fill whole batches only, so every mixed batch below lands on a batch boundary.
-    order = order[: max(args.warm_passes * len(seeds) + (-args.warm_passes * len(seeds)) % args.batch, args.batch)]
+    if not args.extend:
+        order = order[: max(args.warm_passes * len(seeds) + (-args.warm_passes * len(seeds)) % args.batch, args.batch)]
     rng.shuffle(new)
     per_batch_new = args.batch - args.seed_per_batch
     cycle = seeds[:]
@@ -92,17 +111,19 @@ def main() -> None:
         order += batch
 
     with open(args.out, "w") as f:
+        f.writelines(prefix_lines)
         for task, _ in order:
             f.write(prompts[task])
     with open(f"{args.out}.csv", "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["position", "task_id", "part", "prompt_chars", "prior_success_rate"])
-        for i, (task, part) in enumerate(order):
+        for i, (task, part) in enumerate(prefix + order):
             writer.writerow([i, task, part, length(task), prior.get(task, "")])
     warm = sum(part == "warm" for _, part in order)
     print(
-        f"wrote {len(order)} prompts: {warm} warm-start ({warm / args.batch:.1f} batches of {args.batch}), then "
-        f"{len(order) - warm} mixed ({args.seed_per_batch} seed + {per_batch_new} new per batch)"
+        f"wrote {len(prefix) + len(order)} prompts: {len(prefix)} from {args.extend or 'no existing curriculum'}, "
+        f"{warm} warm-start ({warm / args.batch:.1f} batches of {args.batch}), then {len(order) - warm} mixed "
+        f"({args.seed_per_batch} seed + {per_batch_new} new per batch)"
     )
 
 
