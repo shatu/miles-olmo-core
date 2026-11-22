@@ -123,7 +123,6 @@ class OlmoScriptArgs(dense.ScriptArgs):
     def __post_init__(self):
         super().__post_init__()
         assert self.opd_teacher is None, "OPD is not wired for the OLMo-core trainer"
-        assert self.hf_snapshot_every == 0, "the OLMo-core trainer writes native checkpoints only (--save-hf)"
         assert (
             self.train_gpus % self.expert_parallel_size == 0
         ), f"expert_parallel_size {self.expert_parallel_size} must divide train_gpus {self.train_gpus}"
@@ -257,6 +256,10 @@ def run_execute(args: OlmoScriptArgs) -> None:
         f"--save {args.checkpoint_dir} "
         f"--save-interval {args.save_interval} "
     )
+    if args.hf_snapshot_every:
+        # As in run_tmax_qwen3_5.py: an HF export at every save, of which beaker/tmax_beaker_entry.sh keeps every
+        # hf_snapshot_every-th (and the newest). The OLMo-core trainer writes it after the native checkpoint.
+        ckpt_args += f"--save-hf {args.checkpoint_dir}/hf/step_{{rollout_id}} "
 
     rollout_args = (
         f"--prompt-data {args.prompt_data} "

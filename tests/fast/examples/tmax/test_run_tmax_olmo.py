@@ -38,7 +38,7 @@ def test_extra_core_fields_override_the_launcher_ones():
     [
         ({"train_gpus": 3}, "must divide train_gpus"),
         ({"train_gpus": 4, "rollout_gpus": 2}, "exceed 4 GPUs"),
-        ({"hf_snapshot_every": 20, "save_interval": 20}, "native checkpoints only"),
+        ({"hf_snapshot_every": 10, "save_interval": 20}, "multiple of save_interval"),
         ({"sglang_radix_cache": True, "sglang_max_mamba_cache_size": 320}, "5 x sglang_max_running_requests"),
     ],
 )
@@ -97,3 +97,24 @@ def test_skip_labeled_keeps_only_tasks_short_of_their_scored_episodes(tmp_path):
 def test_skip_labeled_needs_a_rollout_only_run_with_traces():
     with pytest.raises(AssertionError, match="skip_labeled"):
         launcher.OlmoScriptArgs(skip_labeled=True, trace_dir="/traces")
+
+
+@pytest.mark.parametrize("every, expected", [(0, None), (10, "--save-hf /out/run/checkpoints/hf/step_{rollout_id}")])
+def test_hf_snapshots_export_at_saves_when_requested(monkeypatch, every, expected):
+    captured = {}
+
+    class Backend:
+        @staticmethod
+        def execute_train(train_args, **_kwargs):
+            captured["train_args"] = train_args
+
+    monkeypatch.setattr(launcher.OlmoScriptArgs, "create_backend", lambda self: Backend())
+    args = launcher.OlmoScriptArgs(
+        sandbox_backend="docker", save_interval=5, hf_snapshot_every=every, output_dir="/out", exp_name="run"
+    )
+    launcher.run_execute(args)
+    found = [
+        part for part in ("--save-hf /out/run/checkpoints/hf/step_{rollout_id}",) if part in captured["train_args"]
+    ]
+    assert found == ([expected] if expected else [])
+    assert "--save /out/run/checkpoints " in captured["train_args"]

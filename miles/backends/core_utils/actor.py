@@ -723,6 +723,33 @@ class OLMoCoreTrainRayActor(TrainRayActor):
         if self.args.debug_rollout_only:
             return
         checkpoint.save(self, rollout_id)
+        if self.args.save_hf is not None:
+            self._save_hf_snapshot(rollout_id, Path(self.args.save_hf.format(rollout_id=rollout_id)))
+
+    def _save_hf_snapshot(self, rollout_id, target):
+        """--save-hf, as Megatron's trainer does at each save: the weights after rollout_id + 1 steps in HF format.
+
+        A retry that saves the same rollout again keeps a finished snapshot and rewrites an unfinished one (no
+        completion marker), which a preemption during the export leaves behind. A failed export fails the save.
+        """
+        decision = [None]
+        if dist.get_rank() == 0:
+            if (target / HF_EXPORT_COMPLETE_MARKER).is_file():
+                decision = ["finished"]
+            else:
+                if target.exists():
+                    logger.warning("Rewriting the unfinished HF snapshot %s", target)
+                    shutil.rmtree(target)
+                decision = ["export"]
+        dist.broadcast_object_list(decision, src=0)
+        if decision[0] == "finished":
+            if dist.get_rank() == 0:
+                logger.info("HF snapshot %s is already complete", target)
+            return
+        started = time.perf_counter()
+        self.export_hf(rollout_id, str(target))
+        if dist.get_rank() == 0:
+            logger.info("HF snapshot %s written in %.0f s", target, time.perf_counter() - started)
 
     def finalize_checkpoint(self, rollout_id):
         if self.args.debug_rollout_only:
