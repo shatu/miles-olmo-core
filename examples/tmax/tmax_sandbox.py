@@ -80,6 +80,7 @@ _OWNER_LABEL = f"{SANDBOX_LABEL}_owner"
 _MAX_OUTPUT_BYTES = 1_000_000
 _OBS_MAX_CHARS = 10_000
 _OBS_HEAD_CHARS = 5_000
+_TEST_OUTPUT_TRACE_CHARS = 4_000
 _OBS_TAIL_CHARS = 5_000
 _OBS_TOO_LONG_HINT = (
     "The output of your last command was too long.\n"
@@ -323,6 +324,8 @@ class SandboxBase:
         self._image = image
         self._task_dir = task_dir
         self._tests_dir = os.path.join(task_dir, "tests")
+        # The tail of the last test run's output (pytest's verdict and failing assertion), for episode traces only.
+        self.last_test_output: str | None = None
 
     async def __aenter__(self) -> "SandboxBase":
         raise NotImplementedError
@@ -352,7 +355,9 @@ class SandboxBase:
             raise
         except Exception as e:
             raise SandboxInfraError(f"tests upload failed: {e!r}") from e
-        await self._exec("bash /tests/test.sh", timeout_s=max(_settings().test_timeout_s, 600))
+        result = await self._exec("bash /tests/test.sh", timeout_s=max(_settings().test_timeout_s, 600))
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        self.last_test_output = output[-_TEST_OUTPUT_TRACE_CHARS:]
         reward_result = await self._exec("cat /logs/verifier/reward.txt")
         try:
             return max(0.0, min(1.0, float(reward_result.stdout.strip())))

@@ -147,6 +147,8 @@ class _Episode:
     tool_times: list[float] = field(default_factory=list)
     # Seconds from asking for the sandbox to holding it (or to giving up): open-instruct's tools/env_reset runtime.
     sandbox_start_time: float = 0.0
+    # The tail of the submitted tests' output, for the trace only (the policy never sees it).
+    test_output: str | None = None
 
 
 async def run(
@@ -336,6 +338,7 @@ async def _run_tool_call(episode: _Episode, box: TmaxSandbox, tool_call: Any) ->
         if reward is None:
             return observation, False
         episode.reward, episode.end_reason = reward, "submitted"
+        episode.test_output = getattr(box, "last_test_output", None)
         return observation, True
     except TimeoutError:
         # open-instruct's outer tool_call_timeout (120 s, never overridden in its prod script) wraps the whole
@@ -412,6 +415,7 @@ def _write_trace(episode: _Episode, metadata: dict, metrics: dict) -> None:
         "reward": episode.reward,
         "metrics": metrics,
         "messages": episode.messages,
+        "test_output": episode.test_output,
     }
     with contextlib.suppress(Exception):
         path = Path(trace_dir) / f"traces-{socket.gethostname()}.jsonl"

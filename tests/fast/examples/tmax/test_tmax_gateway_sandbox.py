@@ -194,6 +194,7 @@ def test_episode_runs_commands_and_tests(gateway, task_dir, monkeypatch):
         "wrapper.sh false": (1, "", "boom"),
         "COMPLETE_TASK": (0, "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n", ""),
         "cat /logs/verifier/reward.txt": (0, "1\n", ""),
+        "bash /tests/test.sh": (0, "1 passed in 0.01s\n", ""),
     }
     gateway.pending_rounds = 2  # the first command takes two wait rounds
 
@@ -203,10 +204,12 @@ def test_episode_runs_commands_and_tests(gateway, task_dir, monkeypatch):
             fail = await box.bash("false")
             submitted = await box.bash("echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT")
             reward = await box.run_tests()
+            test_output = box.last_test_output
             files = dict(gateway.containers["container0001"]["files"])
-        return ls, fail, submitted, reward, files
+        return ls, fail, submitted, reward, files, test_output
 
-    ls, fail, submitted, reward, files = run(gateway, episode, monkeypatch)
+    ls, fail, submitted, reward, files, test_output = run(gateway, episode, monkeypatch)
+    assert test_output == "1 passed in 0.01s\n"
     assert ls == ("a.txt\n\n\n(exit_code=0)", False)
     assert fail == ("boom\n\n(exit_code=1)", False)
     assert submitted[1] is True
