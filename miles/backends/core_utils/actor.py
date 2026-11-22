@@ -976,9 +976,13 @@ class OLMoCoreTrainRayActor(TrainRayActor):
             target.mkdir(parents=True, exist_ok=False)
             models.save_hf_config(self.hf_config, target)
             load_tokenizer(self.args.hf_checkpoint).save_pretrained(target)
-            for name in ("chat_template.jinja", "generation_config.json"):
-                source = Path(self.args.hf_checkpoint) / name
-                if source.is_file():
+            base = Path(self.args.hf_checkpoint)
+            # The config's auto_map names remote-code modules (e.g. Olmo 3.5's configuration_/modeling_olmo3moe.py),
+            # which trust_remote_code loaders read from the snapshot itself.
+            names = ["chat_template.jinja", "generation_config.json", *sorted(p.name for p in base.glob("*.py"))]
+            for name in names:
+                source = base / name
+                if source.is_file() and not (target / name).exists():
                     shutil.copyfile(source, target / name)
             safetensors_torch.save_file(
                 {name: value.detach().cpu().contiguous().clone() for name, value in state.items()},

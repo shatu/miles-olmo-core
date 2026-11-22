@@ -84,6 +84,9 @@ app = typer.Typer()
 @dataclass
 class OlmoScriptArgs(dense.ScriptArgs):
     model_name: _OLMO_MODEL_NAMES = "olmo35-tiny-s-c-noag"
+    # Serve and train this HF checkpoint instead of model_name's, e.g. an RL run's hf/step_<rollout_id> export
+    # (hf_snapshot_every) for a rollout-only pass@k evaluation. model_name still names the architecture family.
+    hf_path: str = ""
     num_gpus_per_node: int = 4
     train_gpus: int = 2
     rollout_gpus: int = 2
@@ -146,7 +149,7 @@ class OlmoScriptArgs(dense.ScriptArgs):
 
     @property
     def hf_checkpoint(self) -> str:
-        return _OLMO_MODELS[self.model_name]
+        return self.hf_path or _OLMO_MODELS[self.model_name]
 
     @property
     def fully_async(self) -> bool:

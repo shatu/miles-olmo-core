@@ -56,3 +56,39 @@ def test_without_save_hf_only_the_native_checkpoint_is_written(trainer):
     instance.args.save_hf = None
     instance.save_model(4)
     assert saves == [4] and exports == []
+
+
+def test_the_export_carries_the_base_checkpoints_template_and_remote_code(monkeypatch, tmp_path):
+    torch = pytest.importorskip("torch")
+    base = tmp_path / "base"
+    base.mkdir()
+    for name, text in (
+        ("chat_template.jinja", "template"),
+        ("generation_config.json", "{}"),
+        ("configuration_olmo3moe.py", "config code"),
+        ("modeling_olmo3moe.py", "model code"),
+        ("README.md", "not copied"),
+    ):
+        (base / name).write_text(text)
+    monkeypatch.setattr(actor.models, "export_state", lambda module, hf: {"w": torch.ones(2)})
+    monkeypatch.setattr(actor.models, "save_hf_config", lambda hf, path: (path / "config.json").write_text("{}"))
+    monkeypatch.setattr(actor, "load_tokenizer", lambda path: SimpleNamespace(save_pretrained=lambda target: None))
+    monkeypatch.setattr(actor.dist, "get_rank", lambda: 0)
+    instance = object.__new__(actor.OLMoCoreTrainRayActor)
+    instance.train_module, instance.hf_config = object(), object()
+    instance.args = SimpleNamespace(hf_checkpoint=str(base))
+    instance._agree = lambda fn: fn()
+    target = tmp_path / "hf" / "step_4"
+    instance.export_hf(4, str(target))
+    written = sorted(p.name for p in target.iterdir())
+    assert written == sorted(
+        [
+            HF_EXPORT_COMPLETE_MARKER,
+            "chat_template.jinja",
+            "config.json",
+            "configuration_olmo3moe.py",
+            "generation_config.json",
+            "model.safetensors",
+            "modeling_olmo3moe.py",
+        ]
+    )

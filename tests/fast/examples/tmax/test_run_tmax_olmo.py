@@ -118,3 +118,12 @@ def test_hf_snapshots_export_at_saves_when_requested(monkeypatch, every, expecte
     ]
     assert found == ([expected] if expected else [])
     assert "--save /out/run/checkpoints " in captured["train_args"]
+
+
+def test_hf_path_replaces_the_model_names_checkpoint():
+    assert (
+        launcher.OlmoScriptArgs(model_name="olmo35-tiny-h250-b2e").hf_checkpoint
+        == launcher._OLMO_MODELS["olmo35-tiny-h250-b2e"]
+    )
+    args = launcher.OlmoScriptArgs(model_name="olmo35-tiny-h250-b2e", hf_path="/ckpt/hf/step_75")
+    assert args.hf_checkpoint == "/ckpt/hf/step_75"
