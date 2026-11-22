@@ -3,7 +3,8 @@
 # (build_curriculum_prompts.py --extend, same criteria: shortest prompts with Qwen prior >= 0.3 outside the pilot),
 # then 2136 prompts of 4 seed + 12 new per batch. Submitted after that run finishes, with
 # --exp-name tmax_rl_olmo_tiny_h250b2e_curriculum_async_radix_active_lr1e5_20261121_172132: it resumes from the
-# step-75 checkpoint at the same prompt offset and trains to step 200. Otherwise identical (lr 1e-5).
+# step-76 checkpoint (rollout_0000075, written by the export job 01M80YHVP2) at the same prompt offset and trains to
+# step 200, exporting HF snapshots for evaluation. Otherwise identical (lr 1e-5).
 exp_name: tmax_rl_olmo_tiny_h250b2e_curriculum_async_radix_active_lr1e5
 sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
 model_name: olmo35-tiny-h250-b2e
@@ -33,6 +34,7 @@ sandbox_start_concurrency: 64                 # concurrent container starts on t
 start_failure: drop                           # a container the fleet cannot start drops its group (prod_4node_gateway)
 lr: 1.0e-5
 save_interval: 5                              # --checkpoint_state_freq 5
+hf_snapshot_every: 25                         # HF exports kept at steps 100, 125, ... for pass@k evaluation
 extra_args: "--distributed-timeout-minutes 120 --sglang-watchdog-timeout 1800"
 data_dir: /weka/oe-adapt-default/shashankg/miles_tmax/datasets
 output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
