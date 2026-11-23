@@ -13,6 +13,7 @@
 #
 # Env (set by submit.py from the config's beaker: section):
 #   NUM_NODES                 Beaker replicas, one Ray node each                           (default: 1)
+#   RAY_HEAD_WAIT_S           how long a worker waits for the Ray head before failing      (default: 7200)
 #   SANDBOX_SHARDS            podman daemons, each with its own storage                    (default: 1)
 #   MIRROR_URL                docker.io pull-through mirror(s), as in open-instruct; see   (optional)
 #                             registry_mirror/registry_mirror.py
@@ -213,8 +214,11 @@ if [ "$NUM_NODES" -gt 1 ] && [ "$RANK" != 0 ]; then
     for pid in "${forwards[@]}"; do
         kill -0 "$pid" || { echo "podman TCP forward (pid $pid) exited"; exit 1; }
     done
-    # The head starts after prepare, which converts the checkpoint on a first run, hence the long wait.
-    deadline=$((SECONDS + 7200))
+    # The head starts after prepare, which converts the checkpoint on a first run, hence the long default wait.
+    # RAY_HEAD_WAIT_S shortens it where prepare is quick (run_tmax_olmo.py reads the HF checkpoint in place): a
+    # worker whose leader was replaced resolves the old leader's hostname and would otherwise idle that long
+    # before failing the job, which Beaker then retries as a whole.
+    deadline=$((SECONDS + ${RAY_HEAD_WAIT_S:-7200}))
     until ray status --address="$HEAD_IP:$RAY_PORT" >/dev/null 2>&1; do
         [ $SECONDS -lt $deadline ] || { echo "Ray head $HEAD_IP:$RAY_PORT never came up"; exit 1; }
         sleep 15
