@@ -1,0 +1,73 @@
+# First serious Terminal-RL run for the Olmo 3.5 A4B checkpoint (ledger H259): the TMax prod recipe with active
+# sampling at lr 1e-5 (the recipe that worked for Tiny: held-out pass@1 0 -> 4.2%), asynchronous, on two nodes.
+# Data: several passes over 1,024 easy tasks (the shortest prompts with a Qwen TMax prior >= 0.3, none of the
+# labeling pilot's 1,000, which stay held out for evaluation; A4B's baseline there is ~14% pass@1), since the
+# Tiny overfit checks showed tasks need many visits to become reliable. No warm start: at ~14% base success most
+# groups of 32 already carry signal.
+# NCCL: open-instruct MILES's env (NCCL_CUMEM_ENABLE=1, NVLS 0), under which its 2-node A4B runs on Holmes publish
+# weights across nodes; with our defaults (CUMEM 0, NVLS 1) the first cross-node broadcast stalled (01M856V2MA).
+exp_name: tmax_rl_olmo_a4b_h259_easy1024_async_lr1e5
+hf_path: /weka/nora-default/shashankg/checkpoints/olmo35-a4b/h259-a4b-c12r-ota-s34521-hf_step7888-eosfix
+num_nodes: 2
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+model_name: olmo35-tiny-h250-b2e
+prompt_file: /weka/oe-adapt-default/shashankg/miles_tmax/datasets/tmax-15k-open-instruct/miles_prompts_olmo_a4b_easy1024.jsonl
+rollout_shuffle: true                         # several passes over the pool, reshuffled each pass
+num_gpus_per_node: 8
+train_gpus: 8                                 # node 1: the trainer (about 1 TB of state)
+rollout_gpus: 8                               # node 2: 8 one-GPU engines
+expert_parallel_size: 8
+asynchronous: true
+rollout_batch_size: 8                         # --num_unique_prompts_rollout 8
+n_samples_per_prompt: 32                      # --num_samples_per_prompt_rollout 32
+num_rollout: 200                              # ~3 passes over the 1,024 tasks
+max_seq_len: 65536
+rollout_max_response_len: 16384               # --per_turn_max_tokens 16384
+max_steps: 64                                 # --max_steps 64
+episode_timeout_s: 1800
+filter_zero_std: true                         # --active_sampling
+max_weight_staleness: 4                       # groups older than --async_steps 4 are dropped
+async_max_concurrent_samples: 256             # prod's 32 in flight per engine, over 8 engines
+async_data_buffer_capacity_factor: 4          # --async_steps 4: generation runs at most 4 steps ahead
+sglang_mem_fraction_static: 0.85
+sglang_radix_cache: true                      # partitioned per rollout call (upstream namespaced cache)
+sglang_max_running_requests: 32                # A4B on one B300: 144 GB of weights, 140 MiB of KDA state per sequence
+sglang_max_mamba_cache_size: 192
+sandbox_start_concurrency: 64                 # concurrent container starts on the fleet, rollout-wide
+start_failure: drop                           # a container the fleet cannot start drops its group (prod_4node_gateway)
+lr: 1.0e-5
+save_interval: 10                             # about 1 TB per native checkpoint with Adam state
+hf_snapshot_every: 50                         # HF exports (145 GB) for pass@k evaluation on the pilot's 1,000 tasks
+extra_args: "--distributed-timeout-minutes 120 --sglang-watchdog-timeout 1800"
+data_dir: /weka/oe-adapt-default/shashankg/miles_tmax/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+dump_training_data: true                      # --save_traces + --save_trainer_logprobs: each step's batch, tokens on
+wandb_project: oe-general-agents
+wandb_entity: ai2-llm
+
+beaker:
+  launcher: examples/tmax/run_tmax_olmo.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  min_runtime: 8h
+  retries: 10                                 # a retry resumes from exp_name's checkpoint
+  nodes: 2
+  gpus: 8
+  shared_memory: 512GiB
+  image: beaker:shashankg/miles-olmo-bfb2f1bf7a
+  weka: [nora-default, oe-adapt-default, olmo-3p5-post-checkpoints]
+  dockerhub_username: shashankg209
+  # The fleet's head registry: the head starts a gateway from it and waits for enough replicas (512 sandboxes / 8 each).
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 64
+  keep_last_n_checkpoints: 1                  # about 1 TB each with Adam state
+  env:
+    MILES_SESSION_REQUEST_TIMEOUT_S: 600       # collect samples: wait up to 10 min instead of 2
+    RAY_HEAD_WAIT_S: 1800                     # the Olmo head is up within minutes; a stale leader fails fast
+    NCCL_DEBUG: WARN                          # mason's default is ERROR, which hides why a collective stalls
+    NCCL_CUMEM_ENABLE: "1"                     # as open-instruct's MILES launcher: trainer and engines
+    NCCL_NVLS_ENABLE: "0"                      # as SGLang's engine default there; Miles' Ray backend would set 1
+    OI_MILES_PUBLICATION_DIAGNOSTICS: "1"     # per-rank export/bucket progress markers, in case a push stalls
