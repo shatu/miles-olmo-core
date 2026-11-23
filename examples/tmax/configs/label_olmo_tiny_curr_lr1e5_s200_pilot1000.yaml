@@ -1,0 +1,44 @@
+# pass@k of the lr 1e-5 curriculum policy after 200 steps (continuation 01M81AZ59D, hf/step_199) on the labeling pilot's
+# 1000 tasks, as label_olmo_tiny_curr_lr1e5_s100_pilot1000.yaml (step 100: pass@1 7.3%, held-out 4.2%).
+exp_name: tmax_label_olmo_tiny_curr_lr1e5_s200_pilot1000
+hf_path: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles/tmax_rl_olmo_tiny_h250b2e_curriculum_async_radix_active_lr1e5_20261121_172132/checkpoints/hf/step_199
+model_name: olmo35-tiny-h250-b2e
+rollout_only: true
+skip_labeled: true
+prompt_file: /weka/oe-adapt-default/shashankg/miles_tmax/datasets/tmax-15k-open-instruct/miles_prompts_olmo_pilot1000.jsonl
+asynchronous: true
+sglang_radix_cache: true
+sglang_max_running_requests: 64
+sglang_max_mamba_cache_size: 384
+rollout_routing_replay: false                 # nothing trains on the routing
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_gpus_per_node: 8
+train_gpus: 2                                 # ignored: rollout_only serves on all rollout_gpus
+rollout_gpus: 8
+expert_parallel_size: 2
+rollout_batch_size: 16
+n_samples_per_prompt: 16
+max_seq_len: 65536
+rollout_max_response_len: 16384
+episode_timeout_s: 7200
+filter_zero_std: false
+save_interval: 1000
+data_dir: /weka/oe-adapt-default/shashankg/miles_tmax/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+
+beaker:
+  launcher: examples/tmax/run_tmax_olmo.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  min_runtime: 8h
+  retries: 10
+  gpus: 8
+  shared_memory: 512GiB
+  image: beaker:shashankg/miles-olmo-bfb2f1bf7a
+  weka: [nora-default, oe-adapt-default, olmo-3p5-post-checkpoints]
+  dockerhub_username: shashankg209
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 64
