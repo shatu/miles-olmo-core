@@ -9,7 +9,8 @@ objective, with every shared flag documented there. On top of it this launcher:
     the HF checkpoint is loaded directly, with no torch_dist conversion;
   * serves the checkpoint with SGLang's out-of-tree Olmo models (SGLANG_EXTERNAL_MODEL_PACKAGE=olmo_sglang.models),
     in the checkpoint's own chat template through --tito-model olmo35 (XML tool calls, qwen3_coder parser);
-  * always disaggregates: train_gpus train and rollout_gpus serve, both in synchronous and fully async runs;
+  * always disaggregates: train_gpus train and rollout_gpus serve, both in synchronous and fully async runs; on
+    several nodes (num_nodes > 1) the trainer takes the first whole nodes and the engines the rest;
   * replays the rollout's expert routing in training (R3), on by default.
 
 Run it in the OLMo-core image (docker/olmo/Dockerfile), with the checkpoint's weka bucket mounted. With one
@@ -21,6 +22,7 @@ one rollout, so --max-weight-staleness means the same as in the Qwen runs.
 Args (in addition to run_tmax_qwen3_5.py's; its Megatron-only flags are ignored):
   --model-name: a key of _OLMO_MODELS (default: olmo35-tiny-s-c-noag).
   --train-gpus / --rollout-gpus: GPUs of the OLMo-core trainer / of the SGLang engines (default: 2 / 2).
+  --rollout-num-gpus-per-engine: GPUs per SGLang engine (tensor parallel), e.g. 2 for a larger checkpoint (default: 1).
   --asynchronous: train_async.py --fully-async, generation never pauses for training (default: off).
   --expert-parallel-size: OLMo-core expert parallelism; must divide train_gpus (default: 2).
   --sequence-packing: pack samples into --qkv-format thd rows of max_seq_len tokens (default: on).
@@ -129,7 +131,6 @@ class OlmoScriptArgs(dense.ScriptArgs):
         assert (
             self.train_gpus % self.expert_parallel_size == 0
         ), f"expert_parallel_size {self.expert_parallel_size} must divide train_gpus {self.train_gpus}"
-        assert self.num_nodes == 1, "this launcher places trainer and engines on one node"
         assert not self.skip_labeled or (
             self.rollout_only and self.trace_dir
         ), "skip_labeled resumes a rollout-only labeling run from its traces: set rollout_only and trace_dir"
@@ -139,10 +140,32 @@ class OlmoScriptArgs(dense.ScriptArgs):
             f"sglang_radix_cache needs sglang_max_mamba_cache_size > 5 x sglang_max_running_requests "
             f"({self.sglang_max_mamba_cache_size} <= 5 x {self.sglang_max_running_requests})"
         )
-        trainer_gpus = 0 if self.rollout_only else self.train_gpus
         assert (
-            trainer_gpus + self.rollout_gpus <= self.num_gpus_per_node
-        ), f"train_gpus {trainer_gpus} + rollout_gpus {self.rollout_gpus} exceed {self.num_gpus_per_node} GPUs"
+            self.rollout_gpus % self.rollout_num_gpus_per_engine == 0
+        ), f"rollout_gpus {self.rollout_gpus} must be whole engines of {self.rollout_num_gpus_per_engine} GPUs"
+        trainer_gpus = 0 if self.rollout_only else self.train_gpus
+        if self.num_nodes == 1:
+            assert (
+                trainer_gpus + self.rollout_gpus <= self.num_gpus_per_node
+            ), f"train_gpus {trainer_gpus} + rollout_gpus {self.rollout_gpus} exceed {self.num_gpus_per_node} GPUs"
+        else:
+            # Several nodes, as open-instruct's learner and vLLM nodes: the trainer on the first whole nodes, the
+            # engines on the rest.
+            assert trainer_gpus % self.num_gpus_per_node == 0 and self.rollout_gpus % self.num_gpus_per_node == 0, (
+                f"on {self.num_nodes} nodes, train_gpus {trainer_gpus} and rollout_gpus {self.rollout_gpus} must be "
+                f"whole nodes of {self.num_gpus_per_node} GPUs"
+            )
+            assert trainer_gpus + self.rollout_gpus == self.num_nodes * self.num_gpus_per_node, (
+                f"train_gpus {trainer_gpus} + rollout_gpus {self.rollout_gpus} must fill the {self.num_nodes} nodes "
+                f"of {self.num_gpus_per_node} GPUs"
+            )
+
+    @property
+    def train_layout(self) -> tuple[int, int]:
+        """(actor nodes, actor GPUs per node): all on one node, or the trainer's whole nodes."""
+        if self.num_nodes == 1:
+            return 1, self.train_gpus
+        return self.train_gpus // self.num_gpus_per_node, self.num_gpus_per_node
 
     def recipe_for(self, model_name: str):
         raise NotImplementedError("Olmo checkpoints are HF paths in _OLMO_MODELS, not Megatron recipes")
@@ -319,7 +342,7 @@ def run_execute(args: OlmoScriptArgs) -> None:
     )
 
     sglang_args = (
-        "--rollout-num-gpus-per-engine 1 "
+        f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
         f"--sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
         "--sglang-reasoning-parser qwen3 "
         "--sglang-tool-call-parser qwen3_coder "
@@ -345,11 +368,15 @@ def run_execute(args: OlmoScriptArgs) -> None:
         sglang_args += "--sglang-cuda-graph-backend-decode disabled "
 
     misc_args = (
-        "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {args.train_gpus} "
+        f"--actor-num-nodes {args.train_layout[0]} "
+        f"--actor-num-gpus-per-node {args.train_layout[1]} "
         f"--rollout-num-gpus {args.rollout_gpus} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
     )
+    if args.num_nodes > 1:
+        # As run_tmax_qwen3_5.py: the agent processes run where the RolloutExecutor does, on the head, whose podman
+        # sockets and gateway the sandboxes go through.
+        misc_args += "--pin-rollout-manager-to-head "
     if args.rollout_routing_replay:
         misc_args += "--use-rollout-routing-replay "
     if args.fully_async:

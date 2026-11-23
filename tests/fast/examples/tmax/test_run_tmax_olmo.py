@@ -127,3 +127,44 @@ def test_hf_path_replaces_the_model_names_checkpoint():
     )
     args = launcher.OlmoScriptArgs(model_name="olmo35-tiny-h250-b2e", hf_path="/ckpt/hf/step_75")
     assert args.hf_checkpoint == "/ckpt/hf/step_75"
+
+
+def _train_args(monkeypatch, **kwargs):
+    captured = {}
+
+    class Backend:
+        @staticmethod
+        def execute_train(train_args, **_kwargs):
+            captured["train_args"] = train_args
+
+    monkeypatch.setattr(launcher.OlmoScriptArgs, "create_backend", lambda self: Backend())
+    launcher.run_execute(launcher.OlmoScriptArgs(sandbox_backend="docker", **kwargs))
+    return captured["train_args"]
+
+
+def test_one_node_keeps_trainer_and_engines_together(monkeypatch):
+    args = _train_args(monkeypatch, num_gpus_per_node=8, train_gpus=4, rollout_gpus=4, expert_parallel_size=4)
+    assert "--actor-num-nodes 1 --actor-num-gpus-per-node 4 --rollout-num-gpus 4 " in args
+    assert "--pin-rollout-manager-to-head" not in args
+
+
+def test_several_nodes_put_the_trainer_on_the_first_whole_nodes(monkeypatch):
+    layout = dict(num_nodes=3, num_gpus_per_node=8, train_gpus=16, rollout_gpus=8, expert_parallel_size=16)
+    assert launcher.OlmoScriptArgs(**layout).train_layout == (2, 8)
+    args = _train_args(monkeypatch, rollout_num_gpus_per_engine=2, **layout)
+    assert "--actor-num-nodes 2 --actor-num-gpus-per-node 8 --rollout-num-gpus 8 --num-gpus-per-node 8 " in args
+    assert "--rollout-num-gpus-per-engine 2 " in args
+    assert "--pin-rollout-manager-to-head" in args
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"num_nodes": 2, "train_gpus": 12, "rollout_gpus": 4, "expert_parallel_size": 4}, "whole nodes"),
+        ({"num_nodes": 3, "train_gpus": 8, "rollout_gpus": 8, "expert_parallel_size": 8}, "must fill"),
+        ({"rollout_gpus": 3, "rollout_num_gpus_per_engine": 2}, "whole engines"),
+    ],
+)
+def test_layouts_that_leave_nodes_or_engines_partial_are_rejected(kwargs, message):
+    with pytest.raises(AssertionError, match=message):
+        launcher.OlmoScriptArgs(num_gpus_per_node=8, **kwargs)
