@@ -50,6 +50,7 @@ On Beaker set ``launcher: examples/tmax/run_tmax_olmo.py`` and the OLMo-core ima
 
 import json
 import math
+import os
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -60,6 +61,18 @@ import run_tmax_qwen3_5 as dense
 import typer
 
 from miles.utils.external_utils import command_utils
+
+# NCCL settings for runs whose trainer and engines sit on different nodes, as open-instruct's MILES launcher sets them
+# (NCCL_CUMEM_ENABLE=1 job-wide; SGLang then leaves NVLS off on the engines). With Miles' defaults (CUMEM 0 for the
+# trainer and SGLang, NVLS 1 from the Ray backend) the first trainer -> engine weight broadcast across nodes never
+# completes, over InfiniBand or TCP alike (A4B: 01M84VCZZ8, 01M858ZKWF, 01M858ZMTS; fixed in 01M85AR5C4). They go into
+# the Ray runtime env, which reaches the trainer and the engines; a value in the job's own env wins.
+_MULTI_NODE_NCCL_ENV = {"NCCL_CUMEM_ENABLE": "1", "NCCL_NVLS_ENABLE": "0"}
+
+
+def _multi_node_nccl_env() -> dict[str, str]:
+    return {name: os.environ.get(name, default) for name, default in _MULTI_NODE_NCCL_ENV.items()}
+
 
 # HF checkpoints, loaded in place (no copy, no conversion).
 _OLMO_MODELS: dict[str, str] = {
@@ -415,6 +428,7 @@ def run_execute(args: OlmoScriptArgs) -> None:
         megatron_path=args.megatron_path,
         train_script="train_async.py" if args.fully_async else "train.py",
         extra_env_vars={
+            **(_multi_node_nccl_env() if args.num_nodes > 1 else {}),
             "PYTHONPATH": f"{dense._SCRIPT_DIR}:{command_utils.repo_base_dir}",
             "SGLANG_EXTERNAL_MODEL_PACKAGE": "olmo_sglang.models",
             "TMAX_TASK_DATA_DIR": args.task_data_dir,

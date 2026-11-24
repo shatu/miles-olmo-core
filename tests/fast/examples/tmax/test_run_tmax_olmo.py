@@ -129,17 +129,47 @@ def test_hf_path_replaces_the_model_names_checkpoint():
     assert args.hf_checkpoint == "/ckpt/hf/step_75"
 
 
-def _train_args(monkeypatch, **kwargs):
+def _execute_train_kwargs(monkeypatch, **kwargs):
     captured = {}
 
     class Backend:
         @staticmethod
-        def execute_train(train_args, **_kwargs):
-            captured["train_args"] = train_args
+        def execute_train(**execute_kwargs):
+            captured.update(execute_kwargs)
 
     monkeypatch.setattr(launcher.OlmoScriptArgs, "create_backend", lambda self: Backend())
     launcher.run_execute(launcher.OlmoScriptArgs(sandbox_backend="docker", **kwargs))
-    return captured["train_args"]
+    return captured
+
+
+def _train_args(monkeypatch, **kwargs):
+    return _execute_train_kwargs(monkeypatch, **kwargs)["train_args"]
+
+
+_TWO_NODES = dict(num_nodes=2, num_gpus_per_node=8, train_gpus=8, rollout_gpus=8, expert_parallel_size=8)
+
+
+def test_several_nodes_get_open_instructs_nccl_env(monkeypatch):
+    for name in launcher._MULTI_NODE_NCCL_ENV:
+        monkeypatch.delenv(name, raising=False)
+    env = _execute_train_kwargs(monkeypatch, **_TWO_NODES)["extra_env_vars"]
+    assert env["NCCL_CUMEM_ENABLE"] == "1"
+    assert env["NCCL_NVLS_ENABLE"] == "0"
+
+
+def test_the_jobs_own_nccl_env_wins(monkeypatch):
+    monkeypatch.setenv("NCCL_CUMEM_ENABLE", "0")
+    monkeypatch.delenv("NCCL_NVLS_ENABLE", raising=False)
+    env = _execute_train_kwargs(monkeypatch, **_TWO_NODES)["extra_env_vars"]
+    assert env["NCCL_CUMEM_ENABLE"] == "0"
+    assert env["NCCL_NVLS_ENABLE"] == "0"
+
+
+def test_one_node_leaves_the_nccl_env_alone(monkeypatch):
+    env = _execute_train_kwargs(
+        monkeypatch, num_gpus_per_node=8, train_gpus=4, rollout_gpus=4, expert_parallel_size=4
+    )["extra_env_vars"]
+    assert not set(launcher._MULTI_NODE_NCCL_ENV) & set(env)
 
 
 def test_one_node_keeps_trainer_and_engines_together(monkeypatch):
