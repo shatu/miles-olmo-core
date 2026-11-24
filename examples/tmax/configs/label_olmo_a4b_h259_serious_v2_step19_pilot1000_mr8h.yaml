@@ -1,0 +1,48 @@
+# label_olmo_a4b_h259_serious_v2_step19_pilot1000.yaml with min_runtime 8h (an allocated, protected job): its preemptible twin kept losing its nodes on
+# Holmes. A new run name, so its own trace directory; results are read from both runs' traces together.
+# pass@k of the serious A4B run's step-20 HF snapshot (tmax_rl_olmo_a4b_h259_easy1024ext_async_64k_lr1e5_v2_20261124_072456, 01M86732NA, hf/step_19) on the labeling pilot's
+# 1,000 held-out tasks, exactly as the baseline (label_olmo_a4b_h259_pilot1000.yaml: pass@1 14.2%, pass@8 43.9%):
+# rollout-only, 8 samples per task. Preemptible; skip_labeled resumes a preempted run from its traces.
+exp_name: tmax_label_olmo_a4b_h259_serious_v2_step19_pilot1000_mr8h
+hf_path: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles/tmax_rl_olmo_a4b_h259_easy1024ext_async_64k_lr1e5_v2_20261124_072456/checkpoints/hf/step_19
+model_name: olmo35-tiny-h250-b2e                 # the Olmo 3.5 family name; hf_path picks the checkpoint
+rollout_only: true
+skip_labeled: true
+prompt_file: /weka/oe-adapt-default/shashankg/miles_tmax/datasets/tmax-15k-open-instruct/miles_prompts_olmo_pilot1000.jsonl
+asynchronous: true
+sglang_radix_cache: true
+sglang_max_running_requests: 32                # A4B on one B300 per engine: 144 GB of weights, 140 MiB of KDA state per sequence
+sglang_mem_fraction_static: 0.85
+sglang_max_mamba_cache_size: 192               # > 5 x 32 running requests (radix cache)
+rollout_routing_replay: false                 # nothing trains on the routing
+sandbox_backend: gateway                      # containers on the fleet behind beaker.gateway_registry
+num_gpus_per_node: 8
+train_gpus: 2                                 # ignored: rollout_only serves on all rollout_gpus
+rollout_gpus: 8
+expert_parallel_size: 2
+rollout_batch_size: 32
+n_samples_per_prompt: 8
+max_seq_len: 65536
+rollout_max_response_len: 16384
+episode_timeout_s: 7200
+filter_zero_std: false
+save_interval: 1000
+data_dir: /weka/oe-adapt-default/shashankg/miles_tmax/datasets
+output_dir: /weka/oe-adapt-default/allennlp/deletable_checkpoint_states/shashankg/miles
+trace_dir: /weka/oe-adapt-default/allennlp/deletable_rollouts/miles
+
+beaker:
+  launcher: examples/tmax/run_tmax_olmo.py
+  cluster: ai2/holmes
+  workspace: ai2/oe-agents-holmes
+  budget: ai2/oe-omai
+  priority: urgent
+  min_runtime: 8h
+  retries: 10
+  gpus: 8
+  shared_memory: 512GiB
+  image: beaker:shashankg/miles-olmo-bfb2f1bf7a
+  weka: [nora-default, oe-adapt-default, olmo-3p5-post-checkpoints]
+  dockerhub_username: shashankg209
+  gateway_registry: head+sqlite:///weka/oe-adapt-default/gfaria/primebeaker/registries/podman-jupiter128-20261105.sqlite3
+  gateway_min_replicas: 64
