@@ -217,7 +217,8 @@ class OlmoScriptArgs(dense.ScriptArgs):
 def prepare(args: OlmoScriptArgs):
     """The dataset and prompt JSONL only: the trainer and SGLang read the HF checkpoint in place."""
     U = args.create_backend()
-    U.hf_download_dataset(dense._DATASET, data_dir=args.data_dir)
+    if not args.dataset.startswith("/"):
+        U.hf_download_dataset(args.dataset, data_dir=args.data_dir)
     if not Path(args.task_data_dir).exists():
         U.exec_command_cpu(
             f"mkdir -p {args.task_data_dir}.tmp && "
