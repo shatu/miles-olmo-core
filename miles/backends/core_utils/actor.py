@@ -13,7 +13,7 @@ import torch
 from safetensors import torch as safetensors_torch
 from torch import distributed as dist
 
-from miles.backends.core_utils import checkpoint, contract, data, expert_schedule, layer_profile
+from miles.backends.core_utils import checkpoint, contract, data, expert_schedule, gc_control, layer_profile
 from miles.backends.core_utils import metrics as training_metrics
 from miles.backends.core_utils import (
     models,
@@ -72,6 +72,7 @@ class OLMoCoreTrainRayActor(TrainRayActor):
             self.weight_updater = None
             return 0
         policy_refresh.validate_pause_mode(args)
+        gc_control.log_slow_collections()
         if role != "actor" or with_opd_teacher or recv_ckpt_src_rank is not None:
             raise ValueError("Core backend supports the policy actor without trainer-cell recovery")
         if indep_dp_store_addr is not None or (indep_dp_info is not None and indep_dp_info.quorum_id != 0):
@@ -725,6 +726,8 @@ class OLMoCoreTrainRayActor(TrainRayActor):
         checkpoint.save(self, rollout_id)
         if self.args.save_hf is not None:
             self._save_hf_snapshot(rollout_id, Path(self.args.save_hf.format(rollout_id=rollout_id)))
+        # Collect the save's garbage now, before the next publication has engine requests in flight.
+        gc_control.collect(f"the rollout {rollout_id} save")
 
     def _save_hf_snapshot(self, rollout_id, target):
         """--save-hf, as Megatron's trainer does at each save: the weights after rollout_id + 1 steps in HF format.
@@ -757,6 +760,7 @@ class OLMoCoreTrainRayActor(TrainRayActor):
         self._agree(lambda: checkpoint.finalize(self, rollout_id))
 
     @publication.diagnose_update
+    @gc_control.paused_during
     def update_weights(self, info):
         # The engines serve the HF checkpoint for the whole of a rollout-only run.
         if self.args.debug_rollout_only:
