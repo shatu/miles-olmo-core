@@ -18,6 +18,7 @@ rollout engines, pausing producer submissions for the duration of the
 
 import asyncio
 import logging
+import time
 from dataclasses import replace
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
@@ -158,13 +159,21 @@ class FullyAsyncRolloutFn(BaseRolloutFn):
         active: dict[asyncio.Task, list[Sample]] = {}
         while True:
             await self._producer_resumed.wait()
+            yield_at = time.monotonic() + 0.008
             while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
                 task, prompt_group = self._submit_one_group()
                 active[task] = prompt_group
+                if time.monotonic() >= yield_at:
+                    await asyncio.sleep(0)
+                    await self._producer_resumed.wait()
+                    yield_at = time.monotonic() + 0.008
             done, _ = await self._scheduler.wait_for_progress(set(active))
             for task in done:
                 entry = self._collect_group_result(task, active.pop(task))
                 await self._output.put(entry)
+                if time.monotonic() >= yield_at:
+                    await asyncio.sleep(0)
+                    yield_at = time.monotonic() + 0.008
 
     def _collect_group_result(self, task: asyncio.Task, prompt_group: list[Sample]) -> DataBufferInput:
         if not task.cancelled():

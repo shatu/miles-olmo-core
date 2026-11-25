@@ -8,6 +8,7 @@ import socket
 import subprocess
 import time
 
+import aiohttp
 import httpx
 
 from miles.utils import logger_utils
@@ -286,8 +287,15 @@ async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, r
             await asyncio.sleep(5)
 
 
-async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> bytes:
-    """Perform one raw-bytes POST with a total timeout."""
+async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float, client=None) -> bytes:
+    """Perform one raw-bytes POST with a total timeout.
+
+    With ``client`` (a loop-owned ``aiohttp.ClientSession`` from the collection transport),
+    the POST uses that bounded pool; aiohttp failures surface as ``httpx.TransportError``
+    so callers keep one error contract.
+    """
+    if client is not None:
+        return await asyncio.wait_for(_post_bytes_aiohttp(client, url, payload), timeout=timeout)
     assert _http_client is not None, "init_http_client() must run before post_bytes_no_retry()"
 
     async def _do() -> bytes:
@@ -297,6 +305,27 @@ async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> byt
         return response.content
 
     return await asyncio.wait_for(_do(), timeout=timeout)
+
+
+async def _post_bytes_aiohttp(client, url: str, payload: dict) -> bytes:
+    started = time.monotonic()
+    try:
+        async with client.post(url, json=payload, allow_redirects=False) as response:
+            body = await response.read()
+            if not (200 <= response.status < 300):
+                raise RuntimeError(f"POST {url} failed with {response.status}: {body.decode(errors='replace')}")
+            logger.info(
+                "sample_reply url=%s total_s=%.6f bytes=%d server_timing=%s",
+                url,
+                time.monotonic() - started,
+                len(body),
+                response.headers.get("Server-Timing", ""),
+            )
+            return body
+    except aiohttp.ClientConnectorError as exc:
+        raise httpx.ConnectError(str(exc)) from exc
+    except aiohttp.ClientError as exc:
+        raise httpx.ReadError(str(exc)) from exc
 
 
 def init_http_client(args):
@@ -466,7 +495,7 @@ async def post(
         # the rollout's bounded whole-group recovery owns retries, not this layer.
         actor = _next_actor()
         if actor is not None:
-            result = await actor.do_post.remote(
+            ref = actor.do_post.remote(
                 url,
                 payload,
                 max_retries,
@@ -476,6 +505,17 @@ async def post(
                 decode_routed_experts=decode_routed_experts,
                 compact_token_logprobs=compact_token_logprobs,
             )
+            try:
+                result = await ref
+            except asyncio.CancelledError:
+                # A local timeout alone does not cancel a queued/running Ray call.
+                import ray
+
+                try:
+                    ray.cancel(ref)
+                except Exception as error:
+                    logger.warning("Could not cancel abandoned distributed HTTP call: %s", error)
+                raise
             if isinstance(result, HTTPPostFailure):
                 raise result.exception()
             return result

@@ -54,6 +54,7 @@ class TestDispose:
         """Out-of-tree rollout hooks may tear down synchronously without returning an awaitable."""
         disposed: list[str] = []
         executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor._diagnostic_writer = None
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = _SynchronousDisposable(disposed, "train")
         executor.eval_generate_rollout = _SynchronousDisposable(disposed, "eval")
@@ -79,6 +80,7 @@ class TestSetEvalFleetInfo:
         provider = FakeInferenceControllerProvider(controller)
         eval_function = FakeEvalFunction()
         executor = RolloutExecutor.__new__(RolloutExecutor)
+        executor._diagnostic_writer = None
         executor.args = Namespace(
             chat_template_path=None,
             custom_eval_rollout_log_function_path=None,
