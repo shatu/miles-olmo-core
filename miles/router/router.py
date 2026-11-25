@@ -34,7 +34,9 @@ def run_router(config: MilesRouterConfig):
     # HTTPX reuses idle connections for five seconds. Uvicorn's matching default
     # can close a selected connection before a delayed client writes its request.
     # Leave margin on the server; this does not limit active generation requests.
-    uvicorn.run(miles_router.app, host=config.host, port=config.port, log_level="info", timeout_keep_alive=60)
+    uvicorn.run(
+        miles_router.app, host=config.host, port=config.port, log_level="info", access_log=False, timeout_keep_alive=60
+    )
 
 
 class MilesRouter:
