@@ -169,7 +169,7 @@ def _loads_meta(meta_arr: np.ndarray) -> dict:
 
 
 def decode_samples_and_merge_input_sample(
-    payload: bytes, input_sample: Sample, *, fields: tuple[str, ...] = COMPUTED_FIELDS
+    payload: bytes | memoryview, input_sample: Sample, *, fields: tuple[str, ...] = COMPUTED_FIELDS
 ) -> SamplesReply:
     """Driver side: overlay each wire sample's computed fields onto a deepcopy of `input_sample`.
 
@@ -177,6 +177,9 @@ def decode_samples_and_merge_input_sample(
     keys a newer server sent are ignored, so a v1 decode of a v2 payload
     keeps exactly the v1 overlay semantics.
     """
+    # The agent pool hands over its zmq frame as a memoryview; safetensors loads bytes only.
+    if not isinstance(payload, bytes):
+        payload = bytes(payload)
     tensors = safetensors.numpy.load(payload)  # SafetensorError propagates: invalid container
     meta_arr = tensors.pop(_SAMPLES_META_KEY)  # KeyError propagates: missing meta is malformed
     if meta_arr.ndim != 1 or meta_arr.dtype != np.uint8:
