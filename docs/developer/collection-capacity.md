@@ -37,13 +37,7 @@ pairwise concatenation, whose cost grew quadratically with the number of turns.
 
 ## Diagnostic dumps
 
-With `--async-rollout-diagnostics`, `miles/ray/rollout/diagnostic_writer.py` snapshots
-only basic fields (identities, prompt/response, token IDs, masks, label, reward, status,
-metadata) and writes them from a spawned process. Candidate/replay arrays and training
-log probabilities are not written. At most one write is pending; a busy writer skips the
-next dump and `rollout/diagnostics/dropped_total`, `skipped` and `write_failures_total`
-report it. Without the flag, `--save-debug-rollout-data` keeps the former synchronous,
-full-field dump.
+This fork keeps the OLMo-core backend's diagnostic writer (`miles/backends/core_utils/rollout/diagnostic_writer.py`, sampled by `--rollout-sample-rate`), which already writes from a spawned process.
 
 ## Benchmarking the orchestration
 

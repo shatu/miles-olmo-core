@@ -22,7 +22,6 @@ def _quiet_rollout_pipeline(monkeypatch):
     Timer().timers.clear()
     Timer().start_time.clear()
     monkeypatch.setattr(rollout_executor_module, "save_debug_rollout_data", lambda *a, **kw: None)
-    monkeypatch.setattr(rollout_executor_module, "log_rollout_preparation", lambda *a, **kw: None)
     monkeypatch.setattr(rollout_executor_module, "convert_samples_to_train_data", lambda *a, **kw: {})
     monkeypatch.setattr(rollout_executor_module, "split_train_data_by_dp", lambda *a, **kw: None)
     monkeypatch.setattr(rollout_executor_module, "assert_weight_version_is_published", lambda *a, **kw: None)
