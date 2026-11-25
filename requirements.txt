@@ -21,6 +21,7 @@ pybase64
 pylatexenc
 pytest-asyncio
 pyyaml
+pyzmq  # IPC between rollout coordinator and agent workers
 qwen_vl_utils # for VLM
 # Ray 2.59 removed internal_api.free, which RayObjectStore needs for RPC references.
 ray[default]>=2.56.0,<2.59.0
@@ -35,5 +36,3 @@ typing_extensions>=4.5
 wandb
 xxhash==3.7.1  # disk-delta weight sync (checksum)
 zstandard==0.25.0  # disk-delta weight sync (codec)
-
-pyzmq  # IPC between rollout coordinator and agent workers

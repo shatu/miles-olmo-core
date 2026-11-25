@@ -165,7 +165,9 @@ async def generate_in_agent_pool(input: GenerateFnInput) -> GenerateFnOutput:
         return finish_episode(input, result=None, agent_metadata=None, session_id=reply.session_id or "")
     if reply.collect_status != 200:
         # As a non-2xx samples POST does on the session-server path: the sample fails, not the run.
-        raise RuntimeError(f"session {reply.session_id} assembly failed with {reply.collect_status}: {reply.collect_error}")
+        raise RuntimeError(
+            f"session {reply.session_id} assembly failed with {reply.collect_status}: {reply.collect_error}"
+        )
     result = await asyncio.to_thread(
         decode_samples_and_merge_input_sample,
         samples,

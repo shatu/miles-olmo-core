@@ -125,9 +125,7 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
         yield SimpleNamespace(status=204)
 
     transport = _FakeTransport(SimpleNamespace(delete=delete))
-    monkeypatch.setattr(
-        "miles.rollout.generate_utils.openai_endpoint_utils.collection_transport", lambda _: transport
-    )
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.collection_transport", lambda _: transport)
 
     ports = [12345, 12346, 12347, 12348]
     args = SimpleNamespace(
@@ -461,9 +459,7 @@ async def test_collection_slot_covers_only_the_transfer(monkeypatch):
     DELETE must not hold an admission slot (the FP8 production backlog).
     """
     transport = CollectionTransport(1)
-    monkeypatch.setattr(
-        "miles.rollout.generate_utils.openai_endpoint_utils.collection_transport", lambda _: transport
-    )
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.collection_transport", lambda _: transport)
     payload = _computed_reply_payload()
     posts = 0
     second_transferred = threading.Event()

@@ -116,9 +116,7 @@ if __name__ == "__main__":
     rng = np.random.default_rng(1)
     output_tokens = [int(x) for x in np.clip(rng.lognormal(np.log(output_median), 0.8, 64), 16, 8000)]
     obs_tokens = [int(x) for x in np.clip(rng.lognormal(np.log(110), 0.9, 64), 8, 4000)]
-    specs = build(
-        hf, tito_model, turns=64, prompt_tokens=1200, output_tokens=output_tokens, obs_tokens=obs_tokens
-    )
+    specs = build(hf, tito_model, turns=64, prompt_tokens=1200, output_tokens=output_tokens, obs_tokens=obs_tokens)
     pickle.dump(specs, open(path, "wb"))
     print(
         "turns",

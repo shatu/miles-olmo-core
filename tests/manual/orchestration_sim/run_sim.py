@@ -359,9 +359,9 @@ def drive(bench, args, rollout, engine_ports, call_rollout_function, RolloutFnTr
         return dict(
             samples_in_flight=getattr(sched, "samples_in_flight", None),
             running_groups=len(fn._running_tasks),
-            gen_held=args.sglang_server_concurrency * args.rollout_num_gpus - sem._value
-            if hasattr(sem, "_value")
-            else None,
+            gen_held=(
+                args.sglang_server_concurrency * args.rollout_num_gpus - sem._value if hasattr(sem, "_value") else None
+            ),
             loop_yield_s=time.perf_counter() - lag0,
             buffer=len(getattr(fn._output, "_buffer", [])),
             **_collection_state(),
@@ -486,17 +486,15 @@ def summarize(bench, steps, observations, samples):
         engine_calls_per_s=calls / span if span else None,
         engine_service_per_call_s=svc / calls if calls else None,
         agent_query_per_turn_s_mean=statistics.mean(per_turn_query) if per_turn_query else None,
-        chat_path_overhead_per_turn_s=(statistics.mean(per_turn_query) - svc / calls)
-        if per_turn_query and calls
-        else None,
+        chat_path_overhead_per_turn_s=(
+            (statistics.mean(per_turn_query) - svc / calls) if per_turn_query and calls else None
+        ),
         post_agent_s_p50=q(post, 0.5),
         post_agent_s_p95=q(post, 0.95),
         post_agent_s_max=max(post) if post else None,
-        samples_in_flight_mean=statistics.mean(
-            r["samples_in_flight"] for r in rs if r["samples_in_flight"] is not None
-        )
-        if rs
-        else None,
+        samples_in_flight_mean=(
+            statistics.mean(r["samples_in_flight"] for r in rs if r["samples_in_flight"] is not None) if rs else None
+        ),
         running_groups_mean=statistics.mean(r["running_groups"] for r in rs) if rs else None,
         collecting_mean=statistics.mean(r.get("collecting", 0) for r in rs) if rs else None,
         collecting_max=max((r.get("collecting", 0) for r in rs), default=None),

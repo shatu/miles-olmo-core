@@ -74,7 +74,9 @@ class _Worker:
         router = context.socket(zmq.ROUTER)
         router.setsockopt(zmq.LINGER, 0)
         router.bind(self._spec.address)
-        logger.info("agent worker %d serving %s, session routes at %s", self._spec.index, self._spec.address, self._base_url)
+        logger.info(
+            "agent worker %d serving %s, session routes at %s", self._spec.index, self._spec.address, self._base_url
+        )
         try:
             await self._dispatch(router)
         finally:
