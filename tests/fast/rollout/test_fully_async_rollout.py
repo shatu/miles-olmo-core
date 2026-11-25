@@ -1314,3 +1314,4 @@ async def test_refill_yields_to_pending_callbacks_after_budget(monkeypatch):
         await fully_async.FullyAsyncRolloutFn._worker_loop(producer)
     await asyncio.gather(*submitted)
     assert len(submitted) == 3
+
